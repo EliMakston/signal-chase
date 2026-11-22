@@ -31,6 +31,13 @@ import {
 import type { ExpoAuthBridgeOptions, JwtVerifierConfig, VerifyResult } from 'deepspace/worker'
 import { integrations } from '../integrations.js'
 import type { AppContext, Env } from '../../worker.js'
+import {
+  isValidLastFmSongId,
+  LastFmMusicProvider,
+  LastFmProviderError,
+} from '../services/lastFmMusicProvider.js'
+import { GraphBuildError, buildGraph } from '../services/graphBuilder.js'
+import { serializeGraph, type SerializedSongGraph } from '../game/graphSerialization.js'
 
 function jwtConfig(env: Env): JwtVerifierConfig {
   return { publicKey: env.AUTH_JWT_PUBLIC_KEY, issuer: env.AUTH_JWT_ISSUER }
@@ -64,6 +71,64 @@ function reassertAppIdentity(headers: Headers, env: Env): void {
   headers.set('x-app-id', env.DEEPSPACE_APP_ID)
 }
 
+const GRAPH_CACHE_TTL_MS = 15 * 60 * 1000
+const GRAPH_CACHE_MAX_ENTRIES = 20
+const graphCache = new Map<string, { expiresAt: number; graph: SerializedSongGraph }>()
+const graphBuildsInFlight = new Map<string, Promise<SerializedSongGraph>>()
+
+function getCachedGraph(seedSongId: string): SerializedSongGraph | null {
+  const cached = graphCache.get(seedSongId)
+  if (!cached) return null
+  if (cached.expiresAt <= Date.now()) {
+    graphCache.delete(seedSongId)
+    return null
+  }
+
+  graphCache.delete(seedSongId)
+  graphCache.set(seedSongId, cached)
+  return cached.graph
+}
+
+async function getOrBuildGraph(
+  seedSongId: string,
+  apiKey: string,
+): Promise<SerializedSongGraph> {
+  const cached = getCachedGraph(seedSongId)
+  if (cached) return cached
+
+  const activeBuild = graphBuildsInFlight.get(seedSongId)
+  if (activeBuild) return activeBuild
+
+  const provider = new LastFmMusicProvider(apiKey)
+  const build = buildGraph(provider, seedSongId, {
+    maxDepth: 2,
+    maxSongs: 30,
+    maxRecommendations: 5,
+    maxRequests: 15,
+  }).then((graph) => {
+    const serialized = serializeGraph(graph)
+    graphCache.set(seedSongId, {
+      expiresAt: Date.now() + GRAPH_CACHE_TTL_MS,
+      graph: serialized,
+    })
+    while (graphCache.size > GRAPH_CACHE_MAX_ENTRIES) {
+      const oldestSeedId = graphCache.keys().next().value
+      if (oldestSeedId === undefined) break
+      graphCache.delete(oldestSeedId)
+    }
+    return serialized
+  })
+
+  graphBuildsInFlight.set(seedSongId, build)
+  try {
+    return await build
+  } finally {
+    if (graphBuildsInFlight.get(seedSongId) === build) {
+      graphBuildsInFlight.delete(seedSongId)
+    }
+  }
+}
+
 /** Register auth, debug, and integration routes in their required order. */
 export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
   const nativeAuthOptions = (env: Env): ExpoAuthBridgeOptions => ({
@@ -71,6 +136,79 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
       .split(',')
       .map((value) => value.trim())
       .filter(Boolean),
+  })
+
+  app.get('/api/music/similar', async (c) => {
+    const apiKeyConfigured = Boolean(c.env.LASTFM_API_KEY?.trim())
+
+    const songId = c.req.query('songId')
+    if (!songId) return c.json({ error: 'Missing songId' }, 400)
+
+    try {
+      const provider = new LastFmMusicProvider(c.env.LASTFM_API_KEY)
+      const songs = await provider.getSimilarSongs(songId)
+      return c.json({ songs })
+    } catch (error) {
+      const diagnostic =
+        error instanceof LastFmProviderError
+          ? {
+              errorType: error.name,
+              errorKind: error.kind,
+              stage: error.details.stage ?? 'unknown',
+              apiKeyConfigured,
+              upstreamStatus: error.details.upstreamStatus,
+              lastFmErrorCode: error.details.lastFmErrorCode,
+              lastFmErrorMessage: error.details.lastFmErrorMessage,
+              upstreamErrorType: error.details.upstreamErrorType,
+            }
+          : {
+              errorType: error instanceof Error ? error.name : typeof error,
+              errorKind: 'unexpected',
+              stage: 'route',
+              apiKeyConfigured,
+            }
+      console.error('[music] Similar-track lookup failed', diagnostic)
+
+      if (error instanceof LastFmProviderError) {
+        if (error.kind === 'invalid_song_id') {
+          return c.json({ error: 'Invalid songId' }, 400)
+        }
+        if (error.kind === 'configuration') {
+          return c.json({ error: 'Music provider is not configured' }, 503)
+        }
+      }
+
+      return c.json({ error: 'Failed to fetch similar songs' }, 502)
+    }
+  })
+
+  app.get('/api/music/graph', async (c) => {
+    const seedSongId = c.req.query('seedSongId')
+    if (!seedSongId || !isValidLastFmSongId(seedSongId)) {
+      return c.json({ error: 'Invalid seedSongId' }, 400)
+    }
+
+    const apiKey = c.env.LASTFM_API_KEY
+    if (!apiKey?.trim()) {
+      return c.json({ error: 'Music provider is not configured' }, 503)
+    }
+
+    try {
+      return c.json(await getOrBuildGraph(seedSongId, apiKey))
+    } catch (error) {
+      if (error instanceof GraphBuildError && error.kind === 'seed_not_found') {
+        return c.json({ error: 'Seed song not found' }, 400)
+      }
+
+      const errorKind =
+        error instanceof GraphBuildError
+          ? error.kind
+          : error instanceof LastFmProviderError
+            ? error.kind
+            : 'unexpected'
+      console.error('[music] Graph build failed', { errorKind })
+      return c.json({ error: 'Failed to build song graph' }, 502)
+    }
   })
 
   // Native routes must precede the Better Auth wildcard below. The exact

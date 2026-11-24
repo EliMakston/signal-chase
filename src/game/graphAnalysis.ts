@@ -39,7 +39,9 @@ function isValidSong(value: unknown, id: unknown): id is string {
         value.id === id &&
         typeof value.title === "string" &&
         typeof value.artist === "string" &&
-        typeof value.albumArt === "string"
+        typeof value.albumArt === "string" &&
+        (typeof value.lastFmUrl === "undefined" ||
+            typeof value.lastFmUrl === "string")
     );
 }
 

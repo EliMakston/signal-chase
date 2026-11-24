@@ -1,6 +1,7 @@
 import { Trophy } from "lucide-react";
 import type { Song } from "../../game/types";
 import { AlbumArtwork } from "./AlbumArtwork";
+import { LastFmTrackLink } from "./LastFmTrackLink";
 
 export interface VictoryRouteEntry {
     song: Song;
@@ -143,6 +144,11 @@ export function VictoryPanel({
                                     {song.artist}
                                 </p>
                             </div>
+                            <LastFmTrackLink
+                                url={song.lastFmUrl}
+                                title={song.title}
+                                artist={song.artist}
+                            />
                             <span className="radio-victory-endpoint-label">
                                 {isStart && isDestination
                                     ? "Start · Destination"

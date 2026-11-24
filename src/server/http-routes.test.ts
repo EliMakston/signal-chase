@@ -56,6 +56,7 @@ describe("/api/music/search", () => {
         );
 
         expect(response.status).toBe(503);
+        expect(response.headers.get("Cache-Control")).toBe("no-store");
         await expect(response.json()).resolves.toMatchObject({
             code: "live_music_disabled",
         });
@@ -77,6 +78,7 @@ describe("/api/music/search", () => {
                                 {
                                     name: "Midnight City",
                                     artist: "M83",
+                                    url: "https://www.last.fm/music/M83/_/Midnight+City",
                                     image: [{ size: "large", "#text": "cover.jpg" }],
                                 },
                                 { name: "Incomplete result" },
@@ -97,6 +99,7 @@ describe("/api/music/search", () => {
         );
 
         expect(response.status).toBe(200);
+        expect(response.headers.get("Cache-Control")).toBe("no-store");
         await expect(response.json()).resolves.toEqual({
             songs: [
                 {
@@ -104,6 +107,7 @@ describe("/api/music/search", () => {
                     title: "Midnight City",
                     artist: "M83",
                     albumArt: "",
+                    lastFmUrl: "https://www.last.fm/music/M83/_/Midnight+City",
                 },
             ],
         });

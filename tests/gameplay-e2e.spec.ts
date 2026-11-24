@@ -7,14 +7,16 @@ interface FixtureSong {
     title: string;
     artist: string;
     albumArt: string;
+    lastFmUrl?: string;
 }
 
-function song(name: string, albumArt = ""): FixtureSong {
+function song(name: string, albumArt = "", lastFmUrl?: string): FixtureSong {
     return {
         id: `lastfm:Fixture:${encodeURIComponent(name)}`,
         title: name,
         artist: "Fixture Artist",
         albumArt,
+        ...(lastFmUrl ? { lastFmUrl } : {}),
     };
 }
 
@@ -67,11 +69,14 @@ const randomFixtureGraph = serializeGraph(randomFixtureSongs, {
     [randomFixtureSongs[10].id]: [randomFixtureSongs[11].id],
 });
 
-async function installRandomGraph(page: Page) {
+async function installRandomGraph(
+    page: Page,
+    graph = randomFixtureGraph,
+) {
     let graphRequests = 0;
     await page.route("**/api/music/graph**", async (route) => {
         graphRequests += 1;
-        await route.fulfill({ json: randomFixtureGraph });
+        await route.fulfill({ json: graph });
     });
     return {
         get requestCount() {
@@ -541,6 +546,97 @@ test.describe("end-to-end gameplay", () => {
             .toBeVisible();
         expect(musicRequests).toHaveLength(demoRequestCount);
         expect(musicRequests).toEqual(["/api/music/graph"]);
+    });
+
+    test("opens Last.fm catalogue links separately from gameplay controls", async ({
+        page,
+    }) => {
+        await page.addInitScript(() => {
+            Math.random = () => 0;
+        });
+        const catalogueUrl =
+            "https://www.last.fm/music/Fixture+Artist/_/Race+One+Left";
+        const linkedGraph = {
+            ...randomFixtureGraph,
+            songs: randomFixtureGraph.songs.map((item) =>
+                item.id === randomFixtureSongs[1].id
+                    ? { ...item, lastFmUrl: catalogueUrl }
+                    : item,
+            ),
+        };
+        await page.route("https://www.last.fm/**", async (route) => {
+            await route.fulfill({ contentType: "text/html", body: "Last.fm test page" });
+        });
+        await installRandomGraph(page, linkedGraph);
+        await page.goto("/game");
+        await page.getByRole("combobox", { name: "Race difficulty" }).selectOption("hard");
+        await page.getByRole("combobox", { name: "Song source" }).selectOption("lastfm");
+        await expect(page.getByTestId("lastfm-attribution-button-slot")).toBeVisible();
+
+        const recommendation = page.getByRole("list", {
+            name: "Legal song recommendations",
+        });
+        const link = recommendation.getByRole("link", {
+            name: "View Race One Left by Fixture Artist on Last.fm",
+        });
+        await expect(link).toHaveAttribute("target", "_blank");
+        await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+        await expect(link.locator("xpath=ancestor::button")).toHaveCount(0);
+        const popupPromise = page.waitForEvent("popup");
+        await link.click();
+        const popup = await popupPromise;
+        await expect(popup).toHaveURL(catalogueUrl);
+        await expect(page.locator('[aria-label^="Current song:"]')).toContainText(
+            "Race One Start",
+        );
+        await expect(page.locator('[aria-label$="moves"]').first()).toContainText(
+            "0 moves",
+        );
+        await popup.close();
+    });
+
+    test("keeps the custom-search catalogue link separate from endpoint selection", async ({
+        page,
+    }) => {
+        const catalogueUrl =
+            "https://www.last.fm/music/Fixture+Artist/_/Search+Link";
+        const result = song("Search Link", "", catalogueUrl);
+        await page.route("**/api/music/search**", async (route) => {
+            const query = new URL(route.request().url()).searchParams.get("query");
+            await route.fulfill({
+                json: {
+                    songs:
+                        query?.toLowerCase() === result.title.toLowerCase()
+                            ? [result]
+                            : [],
+                },
+            });
+        });
+        await page.route("https://www.last.fm/**", async (route) => {
+            await route.fulfill({ contentType: "text/html", body: "Last.fm test page" });
+        });
+        await page.goto("/game");
+        await page.getByRole("combobox", { name: "Race mode" }).selectOption("custom");
+        await page.getByRole("combobox", { name: "Song source" }).selectOption("lastfm");
+        const searchResults = page.getByRole("list", {
+            name: "Starting song search results",
+        });
+        await page.getByRole("searchbox", { name: "Starting song search" }).fill(
+            result.title,
+        );
+        const link = searchResults.getByRole("link", {
+            name: "View Search Link by Fixture Artist on Last.fm",
+        });
+        await expect(link.locator("xpath=ancestor::button")).toHaveCount(0);
+        const popupPromise = page.waitForEvent("popup");
+        await link.click();
+        const popup = await popupPromise;
+        await expect(popup).toHaveURL(catalogueUrl);
+        await expect(page.getByText("Selected origin")).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Start Race" })).toBeDisabled();
+        await popup.close();
+        await searchResults.getByRole("button").click();
+        await expect(page.getByText("Selected origin")).toBeVisible();
     });
 
     test("selects all curated networks by keyboard and Surprise Me changes only on New Race", async ({

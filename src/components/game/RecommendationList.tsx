@@ -2,6 +2,7 @@ import { ArrowRight } from "lucide-react";
 import { SongCard } from "./SongCard";
 import type { SongGraph } from "../../game/types";
 import { getSong } from "../../game/graph";
+import { LastFmTrackLink } from "./LastFmTrackLink";
 
 interface RecommendationListProps {
     graph: SongGraph;
@@ -57,6 +58,11 @@ export function RecommendationList({
                             aria-hidden="true"
                         />
                     </button>
+                    <LastFmTrackLink
+                        url={song.lastFmUrl}
+                        title={song.title}
+                        artist={song.artist}
+                    />
                 </li>
             ))}
         </ul>

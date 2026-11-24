@@ -86,9 +86,46 @@ before enabling the feature. A strict cross-location ceiling would require a
 centralized limiter such as a Durable Object and is intentionally not added
 for this beta preparation.
 
-Do not add caching unless Last.fm's applicable terms explicitly permit it.
-The current implementation deduplicates only simultaneous graph requests;
-completed responses are fetched again.
+Successful JSON responses are cached only when the upstream response explicitly
+allows freshness through `s-maxage`, `max-age`, or `Expires`. `Age` is
+subtracted; `no-store`, `no-cache`, `private`, `Vary`, and cookie-bearing
+responses are not retained, and stale entries are never served. The in-memory,
+per-isolate cache is bounded to 64 entries, 256 KiB per entry, 2 MiB total per
+isolate, and at most five minutes. Browser-facing music API responses use
+`Cache-Control: no-store`. These bounds apply separately to each Worker
+isolate and do **not** establish compliance with any aggregate 100 MB storage
+limit. Do not claim that they guarantee aggregate storage compliance. Confirm
+that caching permitted by the response headers is also consistent with the
+applicable Last.fm terms before enabling live music.
+
+## Last.fm terms, catalogue links, and attribution
+
+The provider uses documented `track.search`, `track.getInfo`, and
+`track.getSimilar` methods over HTTPS. Requests include only the API key and
+track/search fields; no Last.fm username, session token, or player-specific
+account data is sent. API artwork is ignored. Every upstream request uses the
+identifiable `SignalChase/0.1.1 (https://signal-chase.app.space)` User-Agent.
+Demo gameplay starts with local graph data and does not request Last.fm.
+
+Track URLs are preserved only when they are HTTPS catalogue pages on the exact
+`last.fm` or `www.last.fm` host in the `/music/{artist}/_/{track}` form. The
+UI validates each URL again, links open separately from gameplay controls,
+and catalogue links and attribution are shown only for live Last.fm data.
+
+Last.fm API Terms clauses 2.7 and 4.2.2 require the official “powered by
+AudioScrobbler” button linked to Last.fm, catalogue links for displayed track
+data, and written approval of button/link placement. The UI currently reserves
+a clearly labelled placement; this is **not** an official asset and does not
+satisfy the button requirement. Obtain the current official button asset and
+brand guidance, and written placement approval from Last.fm. Written approval
+for public use of the API is still outstanding. Do not enable public live
+music until the approval, attribution, and applicable caching conditions are
+resolved.
+
+The terms describe API data use as non-commercial and require additional
+permission if commercial. Confirm the project's status with Last.fm if
+uncertain. No approval or permitted production rate has been inferred from
+public documentation.
 
 ## Security and privacy review
 

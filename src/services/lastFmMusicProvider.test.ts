@@ -3,6 +3,7 @@ import {
     LastFmMusicProvider,
     LastFmProviderError,
 } from "./lastFmMusicProvider";
+import { LastFmResponseCache } from "./lastFmResponseCache";
 
 function jsonResponse(payload: unknown, status = 200): Response {
     return new Response(JSON.stringify(payload), {
@@ -12,7 +13,9 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 function mockFetch(payload: unknown, status = 200) {
-    return vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(payload, status));
+    return vi
+        .fn<typeof fetch>()
+        .mockImplementation(async () => jsonResponse(payload, status));
 }
 
 describe("LastFmMusicProvider", () => {
@@ -21,6 +24,7 @@ describe("LastFmMusicProvider", () => {
             track: {
                 name: "Signal: Noise",
                 artist: { name: "A & B" },
+                url: "https://www.last.fm/music/A+%26+B/_/Signal%3A+Noise",
                 image: [
                     { size: "small", "#text": "small.jpg" },
                     { size: "extralarge", "#text": "large.jpg" },
@@ -36,6 +40,7 @@ describe("LastFmMusicProvider", () => {
             title: "Signal: Noise",
             artist: "A & B",
             albumArt: "",
+            lastFmUrl: "https://www.last.fm/music/A+%26+B/_/Signal%3A+Noise",
         });
 
         const [requestUrl] = fetcher.mock.calls[0];
@@ -45,6 +50,42 @@ describe("LastFmMusicProvider", () => {
         expect(url.searchParams.get("track")).toBe("Signal: Noise");
         expect(url.searchParams.get("api_key")).toBe("test-key");
         expect(url.searchParams.get("format")).toBe("json");
+        expect(fetcher.mock.calls[0][1]?.headers).toEqual({
+            "User-Agent": "SignalChase/0.1.1 (https://signal-chase.app.space)",
+        });
+    });
+
+    it("caches a successful response only for its upstream freshness lifetime", async () => {
+        let now = 0;
+        const cache = new LastFmResponseCache(4096, 2048, 8, () => now);
+        const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
+            new Response(
+                JSON.stringify({
+                    track: { name: "Track", artist: "Artist", url: "https://www.last.fm/music/Artist/_/Track" },
+                }),
+                {
+                    headers: {
+                        "Cache-Control": "public, max-age=2",
+                        "Content-Type": "application/json",
+                    },
+                },
+            ),
+        );
+        const provider = new LastFmMusicProvider(
+            "test-key",
+            fetcher,
+            10_000,
+            undefined,
+            cache,
+        );
+
+        await provider.getSong("lastfm:Artist:Track");
+        await provider.getSong("lastfm:Artist:Track");
+        expect(fetcher).toHaveBeenCalledTimes(1);
+
+        now = 2_000;
+        await provider.getSong("lastfm:Artist:Track");
+        expect(fetcher).toHaveBeenCalledTimes(2);
     });
 
     it("ignores generic Last.fm placeholder art", async () => {

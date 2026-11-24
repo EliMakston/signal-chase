@@ -17,6 +17,7 @@ import {
     searchLocalSongs,
 } from "./songSearch";
 import type { SongSearchState } from "./songSearch";
+import { LastFmAttribution, LastFmTrackLink } from "./LastFmTrackLink";
 
 function SongSearchField({
     role,
@@ -102,6 +103,13 @@ function SongSearchField({
                             song={selectedSong}
                             className="[&>div:first-child]:h-11 [&>div:first-child]:w-11 [&_p:first-child]:text-sm [&_p:last-child]:text-xs"
                         />
+                        {!localSongs && (
+                            <LastFmTrackLink
+                                url={selectedSong.lastFmUrl}
+                                title={selectedSong.title}
+                                artist={selectedSong.artist}
+                            />
+                        )}
                     </div>
                     <Button
                         variant="outline"
@@ -206,6 +214,13 @@ function SongSearchField({
                                                 {actionLabel}
                                             </span>
                                         </Button>
+                                        {!localSongs && (
+                                            <LastFmTrackLink
+                                                url={song.lastFmUrl}
+                                                title={song.title}
+                                                artist={song.artist}
+                                            />
+                                        )}
                                     </li>
                                 );
                             })}
@@ -294,6 +309,7 @@ export function CustomRacePanel({
                     Start Race
                 </Button>
             </footer>
+            <LastFmAttribution active={!localDemo} />
         </section>
     );
 }

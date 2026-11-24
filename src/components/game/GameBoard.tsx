@@ -23,6 +23,7 @@ import { RecommendationList } from "./RecommendationList";
 import { SongCard } from "./SongCard";
 import { CustomRacePanel } from "./CustomRacePanel";
 import { VictoryPanel } from "./VictoryPanel";
+import { LastFmAttribution, LastFmTrackLink } from "./LastFmTrackLink";
 import {
     createInitialCustomRaceState,
     customRaceReducer,
@@ -784,6 +785,13 @@ export function GameBoard() {
                             song={currentSong}
                             className="[&>div:first-child]:h-16 [&>div:first-child]:w-16 [&_p:first-child]:text-lg sm:[&>div:first-child]:h-20 sm:[&>div:first-child]:w-20 sm:[&_p:first-child]:text-xl"
                         />
+                        {mode === "lastfm" && (
+                            <LastFmTrackLink
+                                url={currentSong.lastFmUrl}
+                                title={currentSong.title}
+                                artist={currentSong.artist}
+                            />
+                        )}
                     </div>
                     {gameState.status !== "won" && (
                         <p className="sr-only" aria-live="polite" aria-atomic="true">
@@ -917,6 +925,13 @@ export function GameBoard() {
                             song={targetSong}
                             className="[&>div:first-child]:h-12 [&>div:first-child]:w-12 [&_p:first-child]:font-bold"
                         />
+                        {mode === "lastfm" && (
+                            <LastFmTrackLink
+                                url={targetSong.lastFmUrl}
+                                title={targetSong.title}
+                                artist={targetSong.artist}
+                            />
+                        )}
                     </section>
 
                     <section className="radio-terminal-panel min-w-0 p-3 sm:p-4">
@@ -965,6 +980,13 @@ export function GameBoard() {
                                             song={song}
                                             className="min-w-0 flex-1 [&>div:first-child]:h-9 [&>div:first-child]:w-9 [&_svg]:h-4 [&_svg]:w-4 [&_p:first-child]:text-sm [&_p:last-child]:text-xs"
                                         />
+                                        {mode === "lastfm" && (
+                                            <LastFmTrackLink
+                                                url={song.lastFmUrl}
+                                                title={song.title}
+                                                artist={song.artist}
+                                            />
+                                        )}
                                         <span className="radio-route-role">
                                             {isCurrent
                                                 ? isStart
@@ -982,6 +1004,7 @@ export function GameBoard() {
                     </aside>
                 )}
             </div>
+            <LastFmAttribution active={mode === "lastfm"} />
         </main>
     );
 }

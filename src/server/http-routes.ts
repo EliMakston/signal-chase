@@ -228,6 +228,7 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
   app.use('/api/music/*', async (c, next) => {
     const endpoint = new URL(c.req.url).pathname.split('/').pop() ?? 'unknown'
     const startedAt = Date.now()
+    c.header('Cache-Control', 'no-store')
     await next()
     console.info('[music] API request', {
       endpoint,

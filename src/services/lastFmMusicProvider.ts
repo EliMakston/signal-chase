@@ -1,7 +1,11 @@
 import type { Song } from "../game/types";
+import { getSafeLastFmTrackUrl } from "../game/lastFmUrl";
 import type { MusicProvider } from "./musicProvider";
+import { LastFmResponseCache } from "./lastFmResponseCache";
 
 const LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/";
+const LASTFM_USER_AGENT =
+    "SignalChase/0.1.1 (https://signal-chase.app.space)";
 const SONG_ID_PREFIX = "lastfm:";
 
 type LastFmErrorKind =
@@ -34,6 +38,7 @@ interface LastFmErrorDetails {
 
 const LASTFM_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_RETRY_AFTER_SECONDS = 60;
+const lastFmResponseCache = new LastFmResponseCache();
 
 export class LastFmProviderError extends Error {
     constructor(
@@ -132,11 +137,13 @@ function normalizeTrack(track: unknown): Song | null {
         return null;
     }
 
+    const lastFmUrl = getSafeLastFmTrackUrl(track.url);
     return {
         id: encodeSongId(artist, title),
         title,
         artist,
         albumArt: "",
+        ...(lastFmUrl ? { lastFmUrl } : {}),
     };
 }
 
@@ -207,6 +214,7 @@ export class LastFmMusicProvider implements MusicProvider {
         private readonly fetcher: typeof fetch = fetch,
         private readonly timeoutMs = LASTFM_REQUEST_TIMEOUT_MS,
         private readonly overallSignal?: AbortSignal,
+        private readonly responseCache: LastFmResponseCache = lastFmResponseCache,
     ) {}
 
     async getSong(songId: string): Promise<Song | null> {
@@ -288,6 +296,21 @@ export class LastFmMusicProvider implements MusicProvider {
             format: "json",
             ...params,
         });
+        const requestUrl = `${LASTFM_API_URL}?${searchParams}`;
+        const cacheKey = `${method}?${new URLSearchParams(
+            Object.entries(params).sort(([left], [right]) =>
+                left.localeCompare(right),
+            ),
+        )}`;
+        const cachedBody = this.responseCache.get(cacheKey);
+        if (cachedBody !== undefined) {
+            try {
+                const cachedPayload: unknown = JSON.parse(cachedBody);
+                if (isRecord(cachedPayload)) return cachedPayload;
+            } catch {
+                // Invalid cached entries are ignored; the bounded cache is in-memory only.
+            }
+        }
 
         let response: Response;
         const requestTimeout = AbortSignal.timeout(this.timeoutMs);
@@ -297,8 +320,11 @@ export class LastFmMusicProvider implements MusicProvider {
         try {
             response = await this.fetcher.call(
                 globalThis,
-                `${LASTFM_API_URL}?${searchParams}`,
-                { signal },
+                requestUrl,
+                {
+                    headers: { "User-Agent": LASTFM_USER_AGENT },
+                    signal,
+                },
             );
         } catch (error) {
             if (
@@ -325,9 +351,9 @@ export class LastFmMusicProvider implements MusicProvider {
             );
         }
 
-        let payload: unknown;
+        let body: string;
         try {
-            payload = await response.json();
+            body = await response.text();
         } catch {
             if (signal.aborted) {
                 throw new LastFmProviderError(
@@ -339,6 +365,21 @@ export class LastFmMusicProvider implements MusicProvider {
                     },
                 );
             }
+            throw new LastFmProviderError(
+                "network",
+                "Last.fm request failed.",
+                {
+                    stage: "response_json",
+                    upstreamStatus: response.status,
+                    upstreamErrorType: "ResponseBodyError",
+                },
+            );
+        }
+
+        let payload: unknown;
+        try {
+            payload = JSON.parse(body);
+        } catch {
             if (!response.ok) {
                 const kind = response.status === 429 ? "rate_limited" : "http";
                 throw new LastFmProviderError(
@@ -389,6 +430,7 @@ export class LastFmMusicProvider implements MusicProvider {
             );
         }
 
+        this.responseCache.set(cacheKey, body, response.headers);
         return payload;
     }
 }

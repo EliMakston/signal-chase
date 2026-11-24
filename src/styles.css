@@ -552,6 +552,53 @@
   font-variant-numeric: tabular-nums;
 }
 
+.radio-lastfm-track-link {
+  display: inline-flex;
+  min-height: 2.75rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--radio-border);
+  border-radius: 0.4rem;
+  padding: 0.45rem 0.65rem;
+  color: var(--radio-amber);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.radio-lastfm-track-link:hover {
+  border-color: var(--radio-amber);
+  background: rgb(233 161 75 / 8%);
+}
+
+.radio-lastfm-track-link:focus-visible {
+  outline: var(--radio-focus-width) solid var(--radio-focus-color);
+  outline-offset: 2px;
+}
+
+.radio-lastfm-attribution {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  border-top: 1px solid var(--radio-border);
+  padding: 0.75rem 0.25rem 0;
+}
+
+.radio-lastfm-attribution-slot {
+  max-width: 100%;
+  border: 1px dashed var(--radio-brass);
+  border-radius: 0.35rem;
+  padding: 0.4rem 0.6rem;
+  color: var(--radio-muted-text);
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
+
 .radio-recommendation-row:hover:not(:disabled) {
   border-color: var(--radio-display);
   background-color: var(--radio-button-hover);

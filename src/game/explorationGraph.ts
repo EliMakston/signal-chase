@@ -30,7 +30,9 @@ function isSong(value: unknown): value is Song {
         song.id.trim().length > 0 &&
         typeof song.title === "string" &&
         typeof song.artist === "string" &&
-        typeof song.albumArt === "string"
+        typeof song.albumArt === "string" &&
+        (typeof song.lastFmUrl === "undefined" ||
+            typeof song.lastFmUrl === "string")
     );
 }
 

@@ -9,6 +9,7 @@ const graph: SongGraph = {
             title: "First",
             artist: "Artist A",
             albumArt: "first.jpg",
+            lastFmUrl: "https://www.last.fm/music/Artist+A/_/First",
         }],
         ["song-2", {
             id: "song-2",

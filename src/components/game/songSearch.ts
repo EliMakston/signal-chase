@@ -65,7 +65,9 @@ function isSong(value: unknown): value is Song {
         song.title.trim().length > 0 &&
         typeof song.artist === "string" &&
         song.artist.trim().length > 0 &&
-        typeof song.albumArt === "string"
+        typeof song.albumArt === "string" &&
+        (typeof song.lastFmUrl === "undefined" ||
+            typeof song.lastFmUrl === "string")
     );
 }
 

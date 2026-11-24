@@ -14,6 +14,11 @@ import {
     isRaceDifficulty,
 } from "../../game/raceGenerator";
 import { getSong } from "../../game/graph";
+import {
+    demoGraphRegistry,
+    getDemoGraphDefinition,
+} from "../../game/demoGraphs";
+import type { DemoGraphSelection } from "../../game/demoGraphs";
 import { RecommendationList } from "./RecommendationList";
 import { SongCard } from "./SongCard";
 import { CustomRacePanel } from "./CustomRacePanel";
@@ -21,6 +26,7 @@ import { VictoryPanel } from "./VictoryPanel";
 import {
     createInitialCustomRaceState,
     customRaceReducer,
+    getCustomRaceReadiness,
 } from "./customRaceState";
 import type { RaceMode } from "./customRaceState";
 import {
@@ -76,10 +82,12 @@ function DataSourceSelector({
     mode,
     dispatch,
     selectRef,
+    onModeChange,
 }: {
     mode: GameDataMode;
     dispatch: Dispatch<GameBoardAction>;
     selectRef?: Ref<HTMLSelectElement>;
+    onModeChange?: (mode: GameDataMode) => void;
 }) {
     return (
         <label className="flex w-full flex-col gap-1 text-sm font-medium text-foreground sm:w-auto">
@@ -87,12 +95,15 @@ function DataSourceSelector({
             <select
                 ref={selectRef}
                 value={mode}
-                onChange={(event) =>
-                    dispatch({
-                        type: "change-mode",
-                        mode: event.currentTarget.value === "lastfm" ? "lastfm" : "demo",
-                    })
-                }
+                onChange={(event) => {
+                    const nextMode =
+                        event.currentTarget.value === "lastfm" ? "lastfm" : "demo";
+                    if (onModeChange) {
+                        onModeChange(nextMode);
+                    } else {
+                        dispatch({ type: "change-mode", mode: nextMode });
+                    }
+                }}
                 className="h-11 w-full rounded-lg border border-input bg-background px-3 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-w-40"
             >
                 <option value="demo">Demo</option>
@@ -133,6 +144,71 @@ function DifficultySelector({
                     ),
                 )}
             </select>
+        </label>
+    );
+}
+
+function DemoGraphSelector({
+    selection,
+    graphId,
+    dispatch,
+    allowSurprise = true,
+    onSelectionChange,
+}: {
+    selection: DemoGraphSelection;
+    graphId: string;
+    dispatch: Dispatch<GameBoardAction>;
+    allowSurprise?: boolean;
+    onSelectionChange?: (selection: DemoGraphSelection) => void;
+}) {
+    const activeGraph = getDemoGraphDefinition(graphId)!;
+    const descriptionId = "curated-network-description";
+
+    return (
+        <label className="flex w-full min-w-0 flex-col gap-1 text-sm font-medium text-foreground sm:w-auto">
+            Curated music network
+            <select
+                value={allowSurprise ? selection : graphId}
+                aria-describedby={descriptionId}
+                onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    const nextSelection =
+                        value === "surprise-me"
+                            ? value
+                            : getDemoGraphDefinition(value)?.id;
+                    if (nextSelection) {
+                        if (onSelectionChange) {
+                            onSelectionChange(nextSelection);
+                        } else {
+                            dispatch({
+                                type: "change-demo-graph",
+                                selection: nextSelection,
+                            });
+                        }
+                    }
+                }}
+                className="h-11 w-full min-w-0 rounded-lg border border-input bg-background px-3 text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-w-48"
+            >
+                {allowSurprise && (
+                    <option value="surprise-me">Surprise Me</option>
+                )}
+                {demoGraphRegistry.map(({ id, name }) => (
+                    <option key={id} value={id}>
+                        {name}
+                    </option>
+                ))}
+            </select>
+            <span
+                id={descriptionId}
+                className="max-w-72 text-xs font-normal leading-relaxed text-muted-foreground"
+                aria-live="polite"
+            >
+                Currently playing: {activeGraph.name} ·{" "}
+                {activeGraph.graph.nodes.size} songs.{" "}
+                {activeGraph.description}
+                {selection === "surprise-me" &&
+                    " New Race chooses another network; Restart keeps this one."}
+            </span>
         </label>
     );
 }
@@ -195,6 +271,20 @@ export function GameBoard() {
             dispatch({ type: "leave-custom-race" });
         }
         dispatchCustomRace({ type: "set-mode", mode });
+    }
+
+    function changeCustomDataMode(mode: GameDataMode) {
+        if (mode === state.mode) return;
+        dispatch({ type: "change-mode", mode });
+        dispatchCustomRace({ type: "clear-selections" });
+    }
+
+    function changeCustomDemoGraph(selection: DemoGraphSelection) {
+        if (selection === "surprise-me" || selection === state.demoGraphId) {
+            return;
+        }
+        dispatch({ type: "change-demo-graph", selection });
+        dispatchCustomRace({ type: "clear-selections" });
     }
 
     useEffect(() => {
@@ -267,13 +357,21 @@ export function GameBoard() {
     ]);
 
     if (customRace.mode === "custom" && !customRace.playing) {
+        const localDemo = state.mode === "demo";
+        const localSongs = localDemo
+            ? [...(state.graph?.nodes.values() ?? [])]
+            : undefined;
+        const readiness = getCustomRaceReadiness(
+            customRace,
+            localDemo ? state.graph : undefined,
+        );
         return (
             <main
                 data-theme="radio-terminal"
                 className="radio-game-shell mx-auto flex min-h-full w-full max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-12"
             >
-                <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-                    <div>
+                <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                    <div className="min-w-0">
                         <p className="radio-brand-label signal-game-brand">
                             <SignalChaseMark />
                             <span>Signal Chase</span>
@@ -285,26 +383,50 @@ export function GameBoard() {
                             Build a custom race
                         </h1>
                         <p className="mt-2 max-w-xl text-sm text-muted-foreground sm:text-base">
-                            Choose the songs you want to race between.
+                            {localDemo
+                                ? "Choose two songs from the active curated network and find a route between them."
+                                : "Choose the songs you want to race between."}
                         </p>
                     </div>
-                    <RaceModeSelector
-                        mode={customRace.mode}
-                        onChange={changeRaceMode}
-                        selectRef={raceModeSelectRef}
-                    />
+                    <div className="radio-console-settings w-full min-w-0 lg:max-w-3xl">
+                        <RaceModeSelector
+                            mode={customRace.mode}
+                            onChange={changeRaceMode}
+                            selectRef={raceModeSelectRef}
+                        />
+                        <DataSourceSelector
+                            mode={state.mode}
+                            dispatch={dispatch}
+                            selectRef={dataSourceSelectRef}
+                            onModeChange={changeCustomDataMode}
+                        />
+                        {localDemo && (
+                            <DemoGraphSelector
+                                selection={state.demoGraphId}
+                                graphId={state.demoGraphId}
+                                dispatch={dispatch}
+                                allowSurprise={false}
+                                onSelectionChange={changeCustomDemoGraph}
+                            />
+                        )}
+                    </div>
                 </header>
                 <CustomRacePanel
                     state={customRace}
                     dispatch={dispatchCustomRace}
+                    localDemo={localDemo}
+                    localSongs={localSongs}
+                    readiness={readiness}
                     onStart={() => {
-                        if (!customRace.startSong || !customRace.targetSong) {
+                        const startSong = customRace.startSong;
+                        const targetSong = customRace.targetSong;
+                        if (!readiness.ready || !startSong || !targetSong) {
                             return;
                         }
                         dispatch({
                             type: "start-custom-race",
-                            startSong: customRace.startSong,
-                            targetSong: customRace.targetSong,
+                            startSong,
+                            targetSong,
                         });
                         dispatchCustomRace({ type: "race-started" });
                     }}
@@ -418,6 +540,13 @@ export function GameBoard() {
                     dispatch={dispatch}
                     selectRef={dataSourceSelectRef}
                 />
+                {state.mode === "demo" && (
+                    <DemoGraphSelector
+                        selection={state.demoGraphSelection}
+                        graphId={state.demoGraphId}
+                        dispatch={dispatch}
+                    />
+                )}
                 <DifficultySelector
                     difficulty={state.difficulty}
                     dispatch={dispatch}
@@ -502,8 +631,12 @@ export function GameBoard() {
                     </h1>
                     <p className="radio-status-indicator mt-2 px-3 py-1 text-xs font-medium">
                         {state.raceKind === "custom"
-                            ? "Custom race · Last.fm songs"
-                            : `Random · ${RACE_DIFFICULTIES[state.difficulty].label} · ${mode === "demo" ? "Demo songs" : "Last.fm songs"}`}
+                            ? mode === "demo"
+                                ? `Custom race · Curated Demo · ${getDemoGraphDefinition(state.demoGraphId)!.name}`
+                                : "Custom race · Last.fm songs"
+                            : mode === "demo"
+                              ? `Random · ${RACE_DIFFICULTIES[state.difficulty].label} · Curated Demo · ${getDemoGraphDefinition(state.demoGraphId)!.name}`
+                              : `Random · ${RACE_DIFFICULTIES[state.difficulty].label} · Last.fm songs`}
                     </p>
                 </div>
                 <div className="radio-console-settings w-full lg:max-w-3xl">
@@ -519,6 +652,13 @@ export function GameBoard() {
                                 dispatch={dispatch}
                                 selectRef={dataSourceSelectRef}
                             />
+                            {mode === "demo" && (
+                                <DemoGraphSelector
+                                    selection={state.demoGraphSelection}
+                                    graphId={state.demoGraphId}
+                                    dispatch={dispatch}
+                                />
+                            )}
                             <DifficultySelector
                                 difficulty={state.difficulty}
                                 dispatch={dispatch}
@@ -663,7 +803,9 @@ export function GameBoard() {
                     ) : (
                         <>
                             <h3 className="radio-section-divider mb-3 text-sm font-semibold">
-                                Recommended next songs
+                                {mode === "demo"
+                                    ? "Curated music connections"
+                                    : "Recommended next songs"}
                             </h3>
                             {recommendationPresentation.loading && (
                                 <p
@@ -750,6 +892,11 @@ export function GameBoard() {
                                     graph={graph}
                                     songIds={availableMoves}
                                     onSelect={selectSong}
+                                    ariaLabel={
+                                        mode === "demo"
+                                            ? "Curated music connections"
+                                            : "Legal song recommendations"
+                                    }
                                 />
                             )}
                         </>

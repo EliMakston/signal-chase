@@ -1,9 +1,8 @@
-# Signal Chase v0.1.0: production readiness
+# Signal Chase v0.1.1: production readiness
 
-This runbook prepares Signal Chase for its Demo-first public beta. This task
-does not authorize or perform a deployment. Written approval for public
-Last.fm use is still outstanding; that approval is a prerequisite only for
-enabling live music, not for launching the playable Demo with Last.fm disabled.
+This runbook describes the Demo-first public beta and the v0.1.1 release. Written
+approval for public Last.fm use is still outstanding; that approval is a
+prerequisite only for enabling live music, not for the playable Demo.
 
 ## Architecture and configuration
 
@@ -130,7 +129,7 @@ npm run lint
 npm run build
 ```
 
-The release version is `0.1.0` in the package metadata. The internal npm
+The release version is `0.1.1` in the package metadata. The internal npm
 package identifier remains unchanged; the configured Worker hostname is now
 `signal-chase`. The production asset build is `npm run build`; this does not
 deploy. The supported release command is `npx deepspace deploy`; `npm run
@@ -143,10 +142,9 @@ Before a future release:
 
 1. Review the worktree and commit the intended changes for the default
    DeepSpace source. The deploy command syncs DeepSpace source by default.
-2. Confirm the `signal-chase.app.space` hostname is available. The Worker
-   name changed, so the existing app must be explicitly renamed on deployment.
-3. Confirm that Cloudflare rate-limit namespace ID `20261123001` is unused in
-   the target account.
+2. Keep the existing `signal-chase.app.space` hostname; do not rename the app.
+3. Confirm that Cloudflare rate-limit namespace ID `20261123001` is the
+   configured namespace for the existing app.
 4. Confirm `LASTFM_ENABLED` is absent or not `true` for the Demo-only beta.
    The production config may retain a Last.fm API key; the disabled server
    opt-in prevents its use.
@@ -157,14 +155,13 @@ npm run build
 npm run type-check
 npm run lint
 npm run test:unit
-npx deepspace deploy --rename
+npx deepspace deploy
 ```
 
-`npm run deploy -- --rename` is the package-script equivalent. The installed
-CLI requires `--rename` to confirm this hostname change. These deployment
-commands are documented only; they were not run for this task. A Last.fm key
-is not required for the Demo-first launch. Do not place production secrets in
-the `dev` configuration. Never use `--ignore-stale` to bypass a stale-release
+`npm run deploy` is the package-script equivalent. These deployment commands
+are documented only; they were not run for this task. A Last.fm key is not
+required for the Demo-only experience. Do not place production secrets in the
+`dev` configuration. Never use `--ignore-stale` to bypass a stale-release
 guard without first resolving the release state.
 
 ## Monitoring and beta request budget
@@ -209,10 +206,10 @@ bundle rollback.
 
 ## Current release blockers
 
-- Confirm `signal-chase.app.space` is available and authorize the app rename
-  using `npx deepspace deploy --rename`.
-- Confirm namespace ID `20261123001` is unused in the target Cloudflare
-  account before the first deployment.
+- Preserve the existing `signal-chase.app.space` hostname; do not rename the
+  app for this release.
+- Confirm namespace ID `20261123001` matches the existing Cloudflare
+  rate-limit binding in the target account.
 - The native rate limiter is approximate per location; it cannot guarantee a
   strict global upstream quota.
 - Written approval for public Last.fm use remains required before enabling

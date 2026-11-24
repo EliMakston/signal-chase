@@ -13,8 +13,17 @@ import {
 } from "../../game/explorationGraph";
 import type { ExplorationGraphState } from "../../game/explorationGraph";
 import { deserializeGraph } from "../../game/graphSerialization";
-import { mockGraph } from "../../game/graph";
 import { isCanonicalLastFmSongId } from "../../game/songIds";
+import { findShortestPath } from "../../game/pathfinding";
+import {
+    chooseRandomDemoGraph,
+    DEFAULT_DEMO_GRAPH_ID,
+    getDemoGraphDefinition,
+} from "../../game/demoGraphs";
+import type {
+    DemoGraphId,
+    DemoGraphSelection,
+} from "../../game/demoGraphs";
 import {
     DEFAULT_RACE_DIFFICULTY,
     generateRace,
@@ -42,6 +51,8 @@ export interface RaceSession {
 
 export interface RandomGameSnapshot {
     mode: GameDataMode;
+    demoGraphSelection: DemoGraphSelection;
+    demoGraphId: DemoGraphId;
     difficulty: RaceDifficulty;
     status: GameLoadStatus;
     graph: SongGraph | null;
@@ -53,6 +64,8 @@ export interface RandomGameSnapshot {
 
 export interface GameBoardState {
     mode: GameDataMode;
+    demoGraphSelection: DemoGraphSelection;
+    demoGraphId: DemoGraphId;
     raceKind: "random" | "custom";
     pausedRandomState: RandomGameSnapshot | null;
     difficulty: RaceDifficulty;
@@ -70,7 +83,12 @@ export interface GameBoardState {
 }
 
 export type GameBoardAction =
-    | { type: "change-mode"; mode: GameDataMode }
+    | { type: "change-mode"; mode: GameDataMode; random?: () => number }
+    | {
+          type: "change-demo-graph";
+          selection: DemoGraphSelection;
+          random?: () => number;
+      }
     | { type: "change-difficulty"; difficulty: RaceDifficulty; random?: () => number }
     | { type: "retry-load" }
     | {
@@ -365,15 +383,21 @@ function stateForGraph(
     expandedSongIds: string[],
     random?: () => number,
     previousExploration?: ExplorationGraphState,
+    demoGraphSelection: DemoGraphSelection = DEFAULT_DEMO_GRAPH_ID,
+    demoGraphId: DemoGraphId = DEFAULT_DEMO_GRAPH_ID,
+    excludeRace?: Pick<GeneratedRace, "startSongId" | "targetSongId">,
 ): GameBoardState {
     const session = createRaceSession(graph, {
         difficulty,
         random,
+        excludeRace,
         expandedSongIds,
         previousExploration,
     });
     return {
         mode,
+        demoGraphSelection,
+        demoGraphId,
         raceKind: "random",
         pausedRandomState: null,
         difficulty,
@@ -391,14 +415,21 @@ function stateForGraph(
     };
 }
 
-export function createInitialGameBoardState(): GameBoardState {
+export function createInitialGameBoardState(
+    random?: () => number,
+): GameBoardState {
+    const definition = getDemoGraphDefinition(DEFAULT_DEMO_GRAPH_ID)!;
     return stateForGraph(
         "demo",
-        mockGraph,
+        definition.graph,
         0,
         0,
         DEFAULT_RACE_DIFFICULTY,
-        [...mockGraph.nodes.keys()],
+        [...definition.graph.nodes.keys()],
+        random,
+        undefined,
+        DEFAULT_DEMO_GRAPH_ID,
+        definition.id,
     );
 }
 
@@ -416,17 +447,30 @@ export function gameBoardReducer(
             const requestId = state.requestId + 1;
             const raceVersion = state.raceVersion + 1;
             if (action.mode === "demo") {
+                const definition =
+                    state.demoGraphSelection === "surprise-me"
+                        ? chooseRandomDemoGraph(
+                              action.random,
+                              state.demoGraphId,
+                          )
+                        : getDemoGraphDefinition(state.demoGraphId)!;
                 return stateForGraph(
                     "demo",
-                    mockGraph,
+                    definition.graph,
                     requestId,
                     raceVersion,
                     state.difficulty,
-                    [...mockGraph.nodes.keys()],
+                    [...definition.graph.nodes.keys()],
+                    action.random,
+                    undefined,
+                    state.demoGraphSelection,
+                    definition.id,
                 );
             }
             return {
                 mode: "lastfm",
+                demoGraphSelection: state.demoGraphSelection,
+                demoGraphId: state.demoGraphId,
                 raceKind: "random",
                 pausedRandomState: null,
                 difficulty: state.difficulty,
@@ -442,6 +486,38 @@ export function gameBoardReducer(
                 raceVersion,
                 requestId,
             };
+        }
+        case "change-demo-graph": {
+            if (state.mode !== "demo" || state.raceKind !== "random") {
+                return state;
+            }
+            const definition =
+                action.selection === "surprise-me"
+                    ? chooseRandomDemoGraph(action.random, state.demoGraphId)
+                    : getDemoGraphDefinition(action.selection);
+            if (!definition) return state;
+            if (
+                definition.id === state.demoGraphId &&
+                action.selection === state.demoGraphSelection
+            ) {
+                return state;
+            }
+
+            return stateForGraph(
+                "demo",
+                definition.graph,
+                state.requestId + 1,
+                state.raceVersion + 1,
+                state.difficulty,
+                [...definition.graph.nodes.keys()],
+                action.random,
+                undefined,
+                action.selection,
+                definition.id,
+                definition.id === state.demoGraphId
+                    ? state.session?.race
+                    : undefined,
+            );
         }
         case "change-difficulty": {
             if (action.difficulty === state.difficulty) return state;
@@ -466,6 +542,8 @@ export function gameBoardReducer(
                 state.expandedSongIds,
                 action.random,
                 state.session?.exploration,
+                state.demoGraphSelection,
+                state.demoGraphId,
             );
         }
         case "retry-load":
@@ -499,6 +577,10 @@ export function gameBoardReducer(
                 state.raceVersion + 1,
                 state.difficulty,
                 action.expandedSongIds ?? [],
+                undefined,
+                undefined,
+                state.demoGraphSelection,
+                state.demoGraphId,
             );
         case "load-failed":
             if (
@@ -552,6 +634,27 @@ export function gameBoardReducer(
                 return state;
             }
             {
+                if (
+                    state.mode === "demo" &&
+                    state.demoGraphSelection === "surprise-me"
+                ) {
+                    const definition = chooseRandomDemoGraph(
+                        action.random,
+                        state.demoGraphId,
+                    );
+                    return stateForGraph(
+                        "demo",
+                        definition.graph,
+                        state.requestId,
+                        state.raceVersion + 1,
+                        state.difficulty,
+                        [...definition.graph.nodes.keys()],
+                        action.random,
+                        undefined,
+                        state.demoGraphSelection,
+                        definition.id,
+                    );
+                }
                 const session = createRaceSession(state.graph, {
                     difficulty: state.difficulty,
                     random: action.random,
@@ -589,20 +692,60 @@ export function gameBoardReducer(
                 return state;
             }
 
-            const graph: SongGraph = {
-                nodes: new Map([
-                    [action.startSong.id, { ...action.startSong }],
-                    [action.targetSong.id, { ...action.targetSong }],
-                ]),
-                edges: new Map([
-                    [action.startSong.id, []],
-                    [action.targetSong.id, []],
-                ]),
-            };
+            const demoGraph = state.mode === "demo" ? state.graph : null;
+            let graph: SongGraph;
+            let startSong = action.startSong;
+            let targetSong = action.targetSong;
+            let optimalMoves: number | null = null;
+            let expandedSongIds: string[] = [];
+
+            if (state.mode === "demo") {
+                if (
+                    !demoGraph ||
+                    !demoGraph.nodes.has(action.startSong.id) ||
+                    !demoGraph.nodes.has(action.targetSong.id)
+                ) {
+                    return {
+                        ...state,
+                        notice:
+                            "Both selected songs must belong to the active Demo network.",
+                    };
+                }
+
+                const path = findShortestPath(
+                    demoGraph,
+                    action.startSong.id,
+                    action.targetSong.id,
+                );
+                if (!path) {
+                    return {
+                        ...state,
+                        notice:
+                            "No directed route connects these songs in the active Demo network.",
+                    };
+                }
+
+                graph = demoGraph;
+                startSong = demoGraph.nodes.get(action.startSong.id)!;
+                targetSong = demoGraph.nodes.get(action.targetSong.id)!;
+                optimalMoves = path.length - 1;
+                expandedSongIds = [...demoGraph.nodes.keys()];
+            } else {
+                graph = {
+                    nodes: new Map([
+                        [action.startSong.id, { ...action.startSong }],
+                        [action.targetSong.id, { ...action.targetSong }],
+                    ]),
+                    edges: new Map([
+                        [action.startSong.id, []],
+                        [action.targetSong.id, []],
+                    ]),
+                };
+            }
             const race: RaceSession["race"] = {
-                startSongId: action.startSong.id,
-                targetSongId: action.targetSong.id,
-                optimalMoves: null,
+                startSongId: startSong.id,
+                targetSongId: targetSong.id,
+                optimalMoves,
             };
             const session: RaceSession = {
                 race,
@@ -611,6 +754,7 @@ export function gameBoardReducer(
                     graph,
                     race.startSongId,
                     race.targetSongId,
+                    expandedSongIds,
                 ),
             };
             const pausedRandomState =
@@ -618,6 +762,8 @@ export function gameBoardReducer(
                     ? state.pausedRandomState
                     : {
                           mode: state.mode,
+                          demoGraphSelection: state.demoGraphSelection,
+                          demoGraphId: state.demoGraphId,
                           difficulty: state.difficulty,
                           status: state.status,
                           graph: state.graph,
@@ -633,7 +779,7 @@ export function gameBoardReducer(
                 pausedRandomState,
                 status: "ready",
                 graph,
-                expandedSongIds: [],
+                expandedSongIds,
                 session,
                 error: null,
                 notice: null,
@@ -657,16 +803,29 @@ export function gameBoardReducer(
                     raceVersion: state.raceVersion + 1,
                 };
             }
-            return {
-                ...stateForGraph(
-                    "demo",
-                    mockGraph,
-                    state.requestId,
-                    state.raceVersion + 1,
-                    state.difficulty,
-                    [...mockGraph.nodes.keys()],
-                ),
-            };
+            {
+                const definition =
+                    state.demoGraphSelection === "surprise-me"
+                        ? chooseRandomDemoGraph(
+                              Math.random,
+                              state.demoGraphId,
+                          )
+                        : getDemoGraphDefinition(state.demoGraphId)!;
+                return {
+                    ...stateForGraph(
+                        "demo",
+                        definition.graph,
+                        state.requestId,
+                        state.raceVersion + 1,
+                        state.difficulty,
+                        [...definition.graph.nodes.keys()],
+                        undefined,
+                        undefined,
+                        state.demoGraphSelection,
+                        definition.id,
+                    ),
+                };
+            }
         case "move":
             if (!state.graph || !state.session) return state;
             {

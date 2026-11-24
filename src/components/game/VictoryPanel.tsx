@@ -47,7 +47,8 @@ export function VictoryPanel({
                         Signal Acquired
                     </h2>
                     <p className="mt-1 text-sm font-medium text-foreground">
-                        Destination reached: {destination.title} by {destination.artist}.
+                        Route from {start.title} by {start.artist} to{" "}
+                        {destination.title} by {destination.artist}.
                     </p>
                 </div>
             </header>
@@ -68,7 +69,7 @@ export function VictoryPanel({
                     </dt>
                     {shortestPathMoves === null ? (
                         <dd className="radio-benchmark-note">
-                            Unavailable for custom races
+                            Unavailable for live custom races
                         </dd>
                     ) : (
                         <>
@@ -78,22 +79,33 @@ export function VictoryPanel({
                             </dd>
                             <dd className="radio-benchmark-details">
                                 <p className="text-xs text-muted-foreground">
-                                    Frozen from the original random-race graph; it is not a
-                                    benchmark of recommendations discovered later.
+                                    {raceKind === "custom"
+                                        ? "Shortest directed path in the selected curated network; the route was not revealed before victory."
+                                        : "Frozen from the original random-race graph; it is not a benchmark of recommendations discovered later."}
                                 </p>
                                 <p className="mt-2 text-sm font-medium text-foreground">
                                     {benchmarkDifference === 0
-                                        ? "Matched the original race-graph benchmark."
+                                        ? raceKind === "custom"
+                                            ? "Matched the curated-network shortest-path benchmark."
+                                            : "Matched the original race-graph benchmark."
                                         : benchmarkDifference !== null &&
                                             benchmarkDifference > 0
                                           ? `${benchmarkDifference} ${
                                                 benchmarkDifference === 1 ? "move" : "moves"
-                                            } above the original benchmark.`
+                                            } above the ${
+                                                raceKind === "custom"
+                                                    ? "shortest-path"
+                                                    : "original race-graph"
+                                            } benchmark.`
                                           : `${Math.abs(benchmarkDifference ?? 0)} ${
                                                 Math.abs(benchmarkDifference ?? 0) === 1
                                                     ? "move"
                                                     : "moves"
-                                            } below the original benchmark.`}
+                                            } below the ${
+                                                raceKind === "custom"
+                                                    ? "shortest-path"
+                                                    : "original race-graph"
+                                            } benchmark.`}
                                 </p>
                             </dd>
                         </>

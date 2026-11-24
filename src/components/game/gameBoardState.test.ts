@@ -14,6 +14,11 @@ import {
 } from "../../game/explorationGraph";
 import { createGame, getAvailableMoves } from "../../game/gameEngine";
 import type { SongGraph } from "../../game/types";
+import {
+    DEFAULT_DEMO_GRAPH_ID,
+    demoGraphRegistry,
+} from "../../game/demoGraphs";
+import { findShortestPath } from "../../game/pathfinding";
 
 const serializedGraph = {
     songs: [
@@ -55,13 +60,240 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
+function createInitialLiveCustomState() {
+    return gameBoardReducer(createInitialGameBoardState(), {
+        type: "change-mode",
+        mode: "lastfm",
+    });
+}
+
 describe("game board data state", () => {
     it("starts in Demo mode with a playable game", () => {
         const state = createInitialGameBoardState();
 
         expect(state.mode).toBe("demo");
+        expect(state.demoGraphId).toBe(DEFAULT_DEMO_GRAPH_ID);
+        expect(state.graph?.nodes.size).toBe(40);
         expect(state.status).toBe("ready");
         expect(state.session?.gameState.moves).toBe(0);
+    });
+
+    it("generates races for every difficulty in all six curated networks", () => {
+        for (const definition of demoGraphRegistry) {
+            let state = createInitialGameBoardState(() => 0);
+            if (definition.id !== DEFAULT_DEMO_GRAPH_ID) {
+                state = gameBoardReducer(state, {
+                    type: "change-demo-graph",
+                    selection: definition.id,
+                    random: () => 0,
+                });
+            }
+
+            expect(state.demoGraphId).toBe(definition.id);
+            expect(state.graph).toBe(definition.graph);
+            expect(state.status).toBe("ready");
+
+            for (const [difficulty, minMoves, maxMoves] of [
+                ["easy", 2, 3],
+                ["medium", 3, 4],
+                ["hard", 4, 5],
+            ] as const) {
+                state = gameBoardReducer(state, {
+                    type: "change-difficulty",
+                    difficulty,
+                    random: () => 0,
+                });
+                expect(state.session?.race.optimalMoves).toBeGreaterThanOrEqual(
+                    minMoves,
+                );
+                expect(state.session?.race.optimalMoves).toBeLessThanOrEqual(
+                    maxMoves,
+                );
+            }
+        }
+    });
+
+    it("starts offline custom races on the full directed graph in all six networks", () => {
+        for (const definition of demoGraphRegistry) {
+            const pathStart = [...definition.graph.nodes.keys()][0];
+            const target = [...definition.graph.nodes.keys()].find((songId) => {
+                const path = findShortestPath(definition.graph, pathStart, songId);
+                return path !== null && path.length > 1;
+            });
+            expect(target).toBeDefined();
+            const path = findShortestPath(definition.graph, pathStart, target!);
+            let state = createInitialGameBoardState();
+            if (definition.id !== DEFAULT_DEMO_GRAPH_ID) {
+                state = gameBoardReducer(state, {
+                    type: "change-demo-graph",
+                    selection: definition.id,
+                    random: () => 0,
+                });
+            }
+
+            const started = gameBoardReducer(state, {
+                type: "start-custom-race",
+                startSong: definition.graph.nodes.get(pathStart)!,
+                targetSong: definition.graph.nodes.get(target!)!,
+            });
+            expect(started.raceKind).toBe("custom");
+            expect(started.graph).toBe(definition.graph);
+            expect(started.session?.race.optimalMoves).toBe(path!.length - 1);
+            expect(started.session?.gameState.moves).toBe(0);
+            expect(started.session?.exploration.expandedSongIds.size).toBe(40);
+            expect(started.session?.exploration.originalShortestPathDistance).toBe(
+                path!.length - 1,
+            );
+        }
+    });
+
+    it("rejects Demo custom endpoints outside the active graph or without a directed route", () => {
+        const initial = createInitialGameBoardState();
+        const outsideGraph = gameBoardReducer(initial, {
+            type: "start-custom-race",
+            startSong: { id: "foreign:start", title: "Start", artist: "Band", albumArt: "" },
+            targetSong: { id: "foreign:target", title: "Target", artist: "Band", albumArt: "" },
+        });
+        expect(outsideGraph.raceKind).toBe("random");
+        expect(outsideGraph.notice).toMatch(/must belong to the active Demo network/);
+
+        const startSong = { id: "offline:start", title: "Start", artist: "Band", albumArt: "" };
+        const targetSong = { id: "offline:target", title: "Target", artist: "Band", albumArt: "" };
+        const disconnected = {
+            ...initial,
+            graph: {
+                nodes: new Map([
+                    [startSong.id, startSong],
+                    [targetSong.id, targetSong],
+                ]),
+                edges: new Map([
+                    [startSong.id, []],
+                    [targetSong.id, []],
+                ]),
+            },
+        };
+        const unreachable = gameBoardReducer(disconnected, {
+            type: "start-custom-race",
+            startSong,
+            targetSong,
+        });
+        expect(unreachable.raceKind).toBe("random");
+        expect(unreachable.notice).toMatch(/No directed route connects/);
+    });
+
+    it("keeps all Demo songs expanded so custom play never fetches recommendations", () => {
+        const graph = demoGraphRegistry[0].graph;
+        const [startId, targetId] = [...graph.nodes.keys()];
+        const started = gameBoardReducer(createInitialGameBoardState(), {
+            type: "start-custom-race",
+            startSong: graph.nodes.get(startId)!,
+            targetSong: graph.nodes.get(targetId)!,
+        });
+        const fetcher = vi.fn<typeof fetch>();
+        const triggered = triggerCurrentSongExpansion(started, vi.fn(), fetcher);
+        expect(triggered).toBe(false);
+        expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it("switches networks with a fresh race and no old graph or exploration state", () => {
+        const initial = createInitialGameBoardState();
+        const switched = gameBoardReducer(initial, {
+            type: "change-demo-graph",
+            selection: "classic-rock",
+            random: () => 0,
+        });
+
+        expect(switched.mode).toBe("demo");
+        expect(switched.demoGraphId).toBe("classic-rock");
+        expect(switched.demoGraphSelection).toBe("classic-rock");
+        expect(switched.graph).toBe(
+            demoGraphRegistry.find(({ id }) => id === "classic-rock")?.graph,
+        );
+        expect(switched.graph?.nodes.size).toBe(40);
+        expect(
+            [...switched.graph!.nodes.keys()].every((id) =>
+                id.startsWith("classic-rock:"),
+            ),
+        ).toBe(true);
+        expect(switched.session?.exploration.originalRaceGraph.nodes.size).toBe(40);
+        expect(switched.session?.gameState.moves).toBe(0);
+        expect(switched.requestId).toBe(initial.requestId + 1);
+        expect(switched.raceVersion).toBe(initial.raceVersion + 1);
+    });
+
+    it("keeps the selected graph and exact race on Restart", () => {
+        const selected = gameBoardReducer(createInitialGameBoardState(), {
+            type: "change-demo-graph",
+            selection: "pop",
+            random: () => 0,
+        });
+        const moved = gameBoardReducer(selected, {
+            type: "move",
+            songId: selected.graph!.edges.get(
+                selected.session!.gameState.currentSongId,
+            )![0],
+        });
+        const restarted = gameBoardReducer(moved, { type: "restart-race" });
+
+        expect(restarted.graph).toBe(selected.graph);
+        expect(restarted.demoGraphId).toBe("pop");
+        expect(restarted.session?.race).toEqual(selected.session?.race);
+        expect(restarted.session?.gameState.moves).toBe(0);
+    });
+
+    it("lets Surprise Me choose a network and changes network only on New Race, not Restart", () => {
+        const selected = gameBoardReducer(createInitialGameBoardState(), {
+            type: "change-demo-graph",
+            selection: "surprise-me",
+            random: () => 0,
+        });
+        expect(selected.demoGraphSelection).toBe("surprise-me");
+        expect(selected.demoGraphId).not.toBe(DEFAULT_DEMO_GRAPH_ID);
+        const selectedId = selected.demoGraphId;
+        const selectedRace = selected.session?.race;
+
+        const restarted = gameBoardReducer(selected, { type: "restart-race" });
+        expect(restarted.demoGraphId).toBe(selectedId);
+        expect(restarted.session?.race).toEqual(selectedRace);
+
+        const nextRace = gameBoardReducer(restarted, {
+            type: "new-race",
+            random: () => 0,
+        });
+        expect(nextRace.demoGraphSelection).toBe("surprise-me");
+        expect(nextRace.demoGraphId).not.toBe(selectedId);
+        expect(nextRace.session?.race).toBeDefined();
+        expect(nextRace.session?.gameState.moves).toBe(0);
+        expect(nextRace.graph?.nodes.size).toBe(40);
+    });
+
+    it("ignores stale Last.fm graph results after returning to Demo and switching networks", () => {
+        const initial = createInitialGameBoardState();
+        const loading = gameBoardReducer(initial, {
+            type: "change-mode",
+            mode: "lastfm",
+        });
+        const demo = gameBoardReducer(loading, {
+            type: "change-mode",
+            mode: "demo",
+        });
+        const switched = gameBoardReducer(demo, {
+            type: "change-demo-graph",
+            selection: "electronic",
+            random: () => 0,
+        });
+        const stale = gameBoardReducer(switched, {
+            type: "graph-loaded",
+            requestId: loading.requestId,
+            graph: fetchGraphFixture(),
+        });
+
+        expect(stale).toBe(switched);
+        expect(stale.demoGraphId).toBe("electronic");
+        expect(stale.graph?.nodes.size).toBe(40);
+        expect([...stale.graph!.nodes.keys()].every((id) =>
+            id.startsWith("electronic:"),
+        )).toBe(true);
     });
 
     it("enters a clear loading state when switching to Last.fm", () => {
@@ -912,7 +1144,7 @@ describe("game board data state", () => {
     });
 
     it("initializes a minimal custom race without finding a route or building a graph", () => {
-        const initial = createInitialGameBoardState();
+        const initial = createInitialLiveCustomState();
         const started = gameBoardReducer(initial, {
             type: "start-custom-race",
             startSong: {
@@ -944,7 +1176,7 @@ describe("game board data state", () => {
     });
 
     it("immediately expands the custom start and can navigate to victory", async () => {
-        const started = gameBoardReducer(createInitialGameBoardState(), {
+        const started = gameBoardReducer(createInitialLiveCustomState(), {
             type: "start-custom-race",
             startSong: {
                 id: "lastfm:Custom:Start",
@@ -1010,7 +1242,7 @@ describe("game board data state", () => {
     });
 
     it("handles empty custom recommendations and supports failure retry", async () => {
-        const started = gameBoardReducer(createInitialGameBoardState(), {
+        const started = gameBoardReducer(createInitialLiveCustomState(), {
             type: "start-custom-race",
             startSong: {
                 id: "lastfm:Custom:RetryStart",
@@ -1069,7 +1301,7 @@ describe("game board data state", () => {
     });
 
     it("preserves custom exploration on restart and restores random state on New Custom Race", () => {
-        const random = createInitialGameBoardState();
+        const random = createInitialLiveCustomState();
         const custom = gameBoardReducer(random, {
             type: "start-custom-race",
             startSong: {
@@ -1117,13 +1349,11 @@ describe("game board data state", () => {
         expect(newCustom.raceKind).toBe("random");
         expect(newCustom.graph).toBe(random.graph);
         expect(newCustom.session?.race).toEqual(random.session?.race);
-        expect(newCustom.session?.exploration.graph.nodes.has(
-            "lastfm:Custom:Remembered",
-        )).toBe(false);
+        expect(newCustom.session).toBeNull();
     });
 
     it("ignores an expansion response after a custom race is abandoned", () => {
-        const random = createInitialGameBoardState();
+        const random = createInitialLiveCustomState();
         const custom = gameBoardReducer(random, {
             type: "start-custom-race",
             startSong: {
@@ -1160,11 +1390,11 @@ describe("game board data state", () => {
 
         expect(stale).toBe(left);
         expect(stale.raceKind).toBe("random");
-        expect(stale.graph?.nodes.has("lastfm:Custom:Stale")).toBe(false);
+        expect(stale.graph).toBeNull();
     });
 
     it("ignores stale custom responses after Restart and after selecting a new pair", () => {
-        const firstCustom = gameBoardReducer(createInitialGameBoardState(), {
+        const firstCustom = gameBoardReducer(createInitialLiveCustomState(), {
             type: "start-custom-race",
             startSong: {
                 id: "lastfm:Custom:FirstStart",
@@ -1291,7 +1521,7 @@ describe("game board data state", () => {
     });
 
     it("disables backtracking at the start and preserves exploration on Back and Restart", () => {
-        const initial = gameBoardReducer(createInitialGameBoardState(), {
+        const initial = gameBoardReducer(createInitialLiveCustomState(), {
             type: "start-custom-race",
             startSong: {
                 id: "lastfm:Back:Start",
@@ -1344,7 +1574,7 @@ describe("game board data state", () => {
     });
 
     it("does not fetch an expanded song again after backtracking", async () => {
-        const custom = gameBoardReducer(createInitialGameBoardState(), {
+        const custom = gameBoardReducer(createInitialLiveCustomState(), {
             type: "start-custom-race",
             startSong: {
                 id: "lastfm:Back:ExpandedStart",
@@ -1397,7 +1627,7 @@ describe("game board data state", () => {
             resolveResponse = resolve;
         });
         const fetcher = vi.fn<typeof fetch>().mockReturnValue(pendingResponse);
-        const initial = gameBoardReducer(createInitialGameBoardState(), {
+        const initial = gameBoardReducer(createInitialLiveCustomState(), {
             type: "start-custom-race",
             startSong: {
                 id: "lastfm:Back:PendingStart",
@@ -1476,6 +1706,7 @@ describe("game board data state", () => {
     it("keeps Demo songs marked expanded so they never need network expansion", () => {
         const state = createInitialGameBoardState();
         const currentSongId = state.session!.gameState.currentSongId;
+        const fetcher = vi.fn<typeof fetch>();
 
         expect(state.mode).toBe("demo");
         expect(songRequiresExpansion(state.session!.exploration, currentSongId))
@@ -1483,6 +1714,10 @@ describe("game board data state", () => {
         expect(state.session!.exploration.expandedSongIds.size).toBe(
             state.graph?.nodes.size,
         );
+        expect(
+            triggerCurrentSongExpansion(state, vi.fn(), fetcher),
+        ).toBe(false);
+        expect(fetcher).not.toHaveBeenCalled();
     });
 
     it("keeps the current race and reports when no alternative pair exists", () => {
@@ -1499,6 +1734,8 @@ describe("game board data state", () => {
         const onlyRace = gameBoardReducer(
             {
                 mode: "demo",
+                demoGraphSelection: "indie-alternative",
+                demoGraphId: "indie-alternative",
                 raceKind: "random",
                 pausedRandomState: null,
                 difficulty: "easy",

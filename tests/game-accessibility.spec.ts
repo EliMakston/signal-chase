@@ -58,7 +58,7 @@ test.describe("game accessibility and responsive layout", () => {
         await expect(receiver).toBeVisible();
         await expect(navigation.getByRole("region", { name: /Destination:/ })).toBeVisible();
         await expect(
-            receiver.getByRole("list", { name: "Legal song recommendations" }),
+            receiver.getByRole("list", { name: "Curated music connections" }),
         ).toBeVisible();
 
         const raceMode = page.getByRole("combobox", { name: "Race mode" });
@@ -115,7 +115,7 @@ test.describe("game accessibility and responsive layout", () => {
         const currentSong = page.locator('[aria-label^="Current song:"]');
         const previousSong = await currentSong.getAttribute("aria-label");
         const move = page
-            .getByRole("list", { name: "Legal song recommendations" })
+            .getByRole("list", { name: "Curated music connections" })
             .getByRole("button")
             .first();
         await move.focus();
@@ -167,9 +167,9 @@ test.describe("game accessibility and responsive layout", () => {
         await page.setViewportSize({ width: 320, height: 900 });
         await page.goto("/game");
         await page.getByRole("combobox", { name: "Race mode" }).selectOption("custom");
-        await expect(
-            page.getByRole("combobox", { name: "Race mode" }),
-        ).toBeFocused();
+        await expect(page.getByRole("combobox", { name: "Race mode" })).toBeFocused();
+        await page.getByRole("combobox", { name: "Song source" }).selectOption("lastfm");
+        await expect(page.getByRole("combobox", { name: "Song source" })).toBeFocused();
 
         const startSearch = page.getByRole("searchbox", {
             name: "Starting song search",
@@ -309,7 +309,7 @@ test.describe("game accessibility and responsive layout", () => {
             "Destination reached: Destination Song by Fixture Artist.",
         );
         await expect(page.getByRole("region", { name: "Signal Acquired" })).toContainText(
-            "Unavailable for custom races",
+            "Unavailable for live custom races",
         );
         await expect(
             page.getByRole("region", { name: "Signal Acquired" })

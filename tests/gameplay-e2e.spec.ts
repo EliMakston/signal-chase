@@ -1,4 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { demoGraphRegistry } from "../src/game/demoGraphs";
+import { findShortestPath } from "../src/game/pathfinding";
 
 interface FixtureSong {
     id: string;
@@ -84,6 +86,7 @@ async function startCustomRace(
     targetSong: FixtureSong,
 ) {
     await page.getByRole("combobox", { name: "Race mode" }).selectOption("custom");
+    await page.getByRole("combobox", { name: "Song source" }).selectOption("lastfm");
     await page.route("**/api/music/search**", async (route) => {
         const query = new URL(route.request().url()).searchParams.get("query") ?? "";
         const match = [startSong, targetSong].find(
@@ -119,7 +122,187 @@ async function moveTo(page: Page, destination: FixtureSong) {
         .click();
 }
 
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function getBacktrackingDemoRace() {
+    const graph = demoGraphRegistry[0].graph;
+    for (const startSongId of graph.nodes.keys()) {
+        for (const targetSongId of graph.nodes.keys()) {
+            const path = findShortestPath(graph, startSongId, targetSongId);
+            if (!path || path.length < 3) continue;
+
+            const abandonedSongId = (graph.edges.get(startSongId) ?? []).find(
+                (songId) =>
+                    !path.includes(songId) &&
+                    findShortestPath(graph, songId, targetSongId) !== null,
+            );
+            if (abandonedSongId) {
+                return {
+                    graph,
+                    start: graph.nodes.get(startSongId)!,
+                    target: graph.nodes.get(targetSongId)!,
+                    path: path.map((songId) => graph.nodes.get(songId)!),
+                    abandoned: graph.nodes.get(abandonedSongId)!,
+                };
+            }
+        }
+    }
+
+    throw new Error("Indie & Alternative needs a custom route with a backtracking branch.");
+}
+
 test.describe("end-to-end gameplay", () => {
+    test("plays offline Custom races across curated networks, backtracks, and shows the shortest-path benchmark", async ({
+        page,
+    }) => {
+        const musicRequests: string[] = [];
+        await page.route("**/api/music/**", async (route) => {
+            musicRequests.push(new URL(route.request().url()).pathname);
+            await route.fulfill({ status: 503, json: { error: "Unexpected Demo request" } });
+        });
+        await page.goto("/game");
+        await page.getByRole("combobox", { name: "Race mode" }).selectOption("custom");
+
+        const network = page.getByRole("combobox", {
+            name: "Curated music network",
+        });
+        await expect(network.locator("option")).toHaveCount(6);
+        const startSearch = page.getByRole("searchbox", {
+            name: "Starting song search",
+        });
+        await expect(
+            page.getByRole("list", { name: "Starting song search results" })
+                .getByRole("button"),
+        ).toHaveCount(40);
+
+        const firstSong = demoGraphRegistry[0].graph.nodes.values().next().value;
+        if (!firstSong) throw new Error("Indie & Alternative has no songs.");
+        await startSearch.fill("not in this network");
+        await expect(
+            page.getByRole("status").filter({
+                hasText: "No songs match this search in the selected network.",
+            }),
+        ).toBeVisible();
+        await startSearch.fill(firstSong.title.slice(0, 4).toUpperCase());
+        const startResult = page
+            .getByRole("list", { name: "Starting song search results" })
+            .getByRole("button", {
+                name: new RegExp(
+                    `${escapeRegExp(firstSong.title)}.*${escapeRegExp(firstSong.artist)}`,
+                ),
+            })
+            .first();
+        await startSearch.press("Tab");
+        await expect(startResult).toBeFocused();
+        await page.keyboard.press("Enter");
+        await expect(page.getByText("Selected origin")).toBeVisible();
+
+        await network.selectOption("classic-rock");
+        await expect(page.getByText("Selected origin")).toHaveCount(0);
+        await startSearch.fill("");
+        await expect(page.getByRole("list", { name: "Starting song search results" })
+            .getByRole("button")).toHaveCount(40);
+        for (const { id, name } of demoGraphRegistry) {
+            await network.selectOption(id);
+            await expect(network).toHaveValue(id);
+            await expect(
+                page.getByText(new RegExp(`Currently playing: ${escapeRegExp(name)} · 40 songs`)),
+            ).toBeVisible();
+        }
+
+        await network.selectOption("indie-alternative");
+        const race = getBacktrackingDemoRace();
+        await startSearch.fill(race.start.title);
+        await page
+            .getByRole("list", { name: "Starting song search results" })
+            .getByRole("button", {
+                name: new RegExp(
+                    `${escapeRegExp(race.start.title)}.*${escapeRegExp(race.start.artist)}`,
+                ),
+            })
+            .first()
+            .click();
+
+        const targetSearch = page.getByRole("searchbox", {
+            name: "Destination song search",
+        });
+        await targetSearch.fill(race.start.title);
+        const duplicate = page
+            .getByRole("list", { name: "Destination song search results" })
+            .getByRole("button", {
+                name: new RegExp(
+                    `${escapeRegExp(race.start.title)}.*${escapeRegExp(race.start.artist)}`,
+                ),
+            })
+            .first();
+        await expect(duplicate).toBeDisabled();
+        await targetSearch.fill(race.target.title);
+        await page
+            .getByRole("list", { name: "Destination song search results" })
+            .getByRole("button", {
+                name: new RegExp(
+                    `${escapeRegExp(race.target.title)}.*${escapeRegExp(race.target.artist)}`,
+                ),
+            })
+            .first()
+            .click();
+        await page.getByRole("button", { name: "Start Race" }).click();
+
+        await moveTo(page, race.abandoned);
+        await page.getByRole("button", { name: "Back to previous song" }).click();
+        for (const song of race.path.slice(1)) {
+            await moveTo(page, {
+                id: song.id,
+                title: song.title,
+                artist: song.artist,
+                albumArt: song.albumArt,
+            });
+        }
+
+        await expect(page.getByRole("heading", { name: "Signal Acquired" })).toBeVisible();
+        await expect(page.getByText(
+            `Route from ${race.start.title} by ${race.start.artist} to ${race.target.title} by ${race.target.artist}.`,
+        )).toBeVisible();
+        await expect(page.getByText("Shortest directed path in the selected curated network; the route was not revealed before victory."))
+            .toBeVisible();
+        const completedRoute = page.getByRole("list", {
+            name: "Completed route in order",
+        });
+        await expect(completedRoute.locator("li")).toHaveCount(race.path.length);
+        await expect(completedRoute).not.toContainText(race.abandoned.title);
+
+        await page.getByRole("button", { name: "Restart current race" }).click();
+        await expect(page.getByRole("heading", { name: "Current song" })).toBeVisible();
+        await expect(
+            page.getByRole("region", {
+                name: `Destination: ${race.target.title} by ${race.target.artist}`,
+            }),
+        ).toBeVisible();
+        await page.getByRole("button", { name: "New Custom Race" }).click();
+        await expect(page.getByText("Selected origin")).toHaveCount(0);
+        await expect(page.getByText("Selected destination")).toHaveCount(0);
+        await expect(network.locator("option")).toHaveCount(6);
+        await expect(page.getByRole("combobox", { name: "Race difficulty" })).toHaveCount(0);
+        await page.getByRole("combobox", { name: "Race mode" }).selectOption("random");
+        await expect(page.getByRole("heading", { name: "Link the songs" })).toBeVisible();
+        await page.getByRole("combobox", { name: "Race mode" }).selectOption("custom");
+        await expect(page.getByRole("list", { name: "Starting song search results" })
+            .getByRole("button")).toHaveCount(40);
+
+        for (const width of [320, 390, 768, 1280]) {
+            await page.setViewportSize({ width, height: 900 });
+            const dimensions = await page.evaluate(() => ({
+                viewport: document.documentElement.clientWidth,
+                content: document.documentElement.scrollWidth,
+            }));
+            expect(dimensions.content, `Custom setup overflows at ${width}px`)
+                .toBeLessThanOrEqual(dimensions.viewport);
+        }
+        expect(musicRequests).toEqual([]);
+    });
+
     test("renders artwork safely and continues gameplay through missing and failed images", async ({
         page,
     }) => {
@@ -255,6 +438,7 @@ test.describe("end-to-end gameplay", () => {
         await page.addInitScript(() => {
             Math.random = () => 0;
         });
+
         const fixture = await installRandomGraph(page);
         await page.goto("/game");
         await page.getByRole("combobox", { name: "Race difficulty" }).selectOption("hard");
@@ -324,11 +508,27 @@ test.describe("end-to-end gameplay", () => {
         await page.getByRole("combobox", { name: "Song source" }).selectOption("demo");
         await expect(page.getByRole("heading", { name: "Link the songs" })).toBeVisible();
 
+        const demoRequestCount = musicRequests.length;
+        const networkSelector = page.getByRole("combobox", {
+            name: "Curated music network",
+        });
+        await expect(networkSelector).toHaveValue("indie-alternative");
+        await expect(
+            page.getByRole("list", { name: "Curated music connections" }),
+        ).toBeVisible();
+        await networkSelector.selectOption("classic-rock");
+        await expect(page.getByText(/Currently playing: Classic Rock · 40 songs/))
+            .toBeVisible();
+        await page.getByRole("combobox", { name: "Race difficulty" })
+            .selectOption("hard");
+        await expect(page.getByRole("combobox", { name: "Race difficulty" }))
+            .toHaveValue("hard");
+
         const previousSong = await page
             .locator('[aria-label^="Current song:"]')
             .getAttribute("aria-label");
         await page
-            .getByRole("list", { name: "Legal song recommendations" })
+            .getByRole("list", { name: "Curated music connections" })
             .getByRole("button")
             .first()
             .click();
@@ -336,7 +536,73 @@ test.describe("end-to-end gameplay", () => {
             "aria-label",
             previousSong!,
         );
+        await page.getByRole("button", { name: "Restart current race" }).click();
+        await expect(page.getByText(/Currently playing: Classic Rock · 40 songs/))
+            .toBeVisible();
+        expect(musicRequests).toHaveLength(demoRequestCount);
         expect(musicRequests).toEqual(["/api/music/graph"]);
+    });
+
+    test("selects all curated networks by keyboard and Surprise Me changes only on New Race", async ({
+        page,
+    }) => {
+        const musicRequests: string[] = [];
+        await page.addInitScript(() => {
+            Math.random = () => 0;
+        });
+        await page.route("**/api/music/**", async (route) => {
+            musicRequests.push(new URL(route.request().url()).pathname);
+            await route.fulfill({ status: 503, json: { code: "unexpected" } });
+        });
+        await page.goto("/game");
+
+        const network = page.getByRole("combobox", {
+            name: "Curated music network",
+        });
+        await expect(network).toHaveValue("indie-alternative");
+        await expect(network.locator("option")).toHaveCount(7);
+        await network.focus();
+        await network.press("c");
+        await network.press("Enter");
+        await expect(network).toHaveValue("classic-rock");
+        await expect(page.getByText(/Currently playing: Classic Rock · 40 songs/))
+            .toBeVisible();
+
+        for (const [id, name] of [
+            ["indie-alternative", "Indie & Alternative"],
+            ["pop", "Pop"],
+            ["hip-hop", "Hip-Hop"],
+            ["electronic", "Electronic"],
+            ["across-the-decades", "Across the Decades"],
+        ]) {
+            await network.selectOption(id);
+            await expect(network).toHaveValue(id);
+            await expect(
+                page.getByText(new RegExp(`Currently playing: ${name} · 40 songs`)),
+            ).toBeVisible();
+        }
+
+        await network.selectOption("surprise-me");
+        await expect(network).toHaveValue("surprise-me");
+        const activeDescription = page.getByText(/Currently playing:/);
+        const selectedNetwork = await activeDescription.textContent();
+        const startBeforeRestart = await page
+            .locator('[aria-label^="Current song:"]')
+            .getAttribute("aria-label");
+        await page.getByRole("button", { name: "Restart current race" }).click();
+        await expect(activeDescription).toHaveText(selectedNetwork!);
+        await expect(page.locator('[aria-label^="Current song:"]')).toHaveAttribute(
+            "aria-label",
+            startBeforeRestart!,
+        );
+
+        await page.getByRole("button", { name: "New Race" }).click();
+        await expect(activeDescription).not.toHaveText(selectedNetwork!);
+        await expect(page.locator('[aria-label^="Current song:"]')).not.toHaveAttribute(
+            "aria-label",
+            startBeforeRestart!,
+        );
+        expect(musicRequests).toEqual([]);
     });
 
     test("expands an unvisited custom song once, reuses it after Back, and wins", async ({
@@ -380,7 +646,7 @@ test.describe("end-to-end gameplay", () => {
         );
         await expect(victory.getByRole("heading", { name: "Signal Acquired" })).toBeVisible();
         await expect(victory).toContainText("Final active-route moves");
-        await expect(victory).toContainText("Unavailable for custom races");
+        await expect(victory).toContainText("Unavailable for live custom races");
         const route = victory.getByRole("list", { name: "Completed route in order" });
         await expect(route.locator("li")).toHaveCount(3);
         await expect(route.locator("li").nth(0)).toContainText(start.title);
@@ -557,6 +823,9 @@ test.describe("end-to-end gameplay", () => {
                 json: { songs: [song("Stale Recommendation")] },
             });
         });
+        await page.route("**/api/music/graph**", async (route) => {
+            await route.fulfill({ json: randomFixtureGraph });
+        });
         await page.goto("/game");
         await startCustomRace(page, start, target);
         await requestSeen;
@@ -593,6 +862,7 @@ test.describe("end-to-end gameplay", () => {
         });
         await page.goto("/game");
         await page.getByRole("combobox", { name: "Race mode" }).selectOption("custom");
+        await page.getByRole("combobox", { name: "Song source" }).selectOption("lastfm");
         const startSearch = page.getByRole("searchbox", { name: "Starting song search" });
         await startSearch.fill("slow");
         await page.waitForTimeout(350);

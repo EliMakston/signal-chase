@@ -8,6 +8,7 @@ interface RecommendationListProps {
     songIds: string[];
     onSelect: (songId: string) => void;
     disabled?: boolean;
+    ariaLabel?: string;
 }
 
 export function RecommendationList({
@@ -15,6 +16,7 @@ export function RecommendationList({
     songIds,
     onSelect,
     disabled = false,
+    ariaLabel = "Legal song recommendations",
 }: RecommendationListProps) {
     const recommendations = songIds.flatMap((songId) => {
         const song = getSong(graph, songId);
@@ -30,15 +32,18 @@ export function RecommendationList({
     }
 
     return (
-        <ul className="grid min-w-0 gap-2" aria-label="Legal song recommendations">
+        <ul className="grid min-w-0 gap-2" aria-label={ariaLabel}>
             {recommendations.map(({ songId, song }, index) => (
-                <li key={songId}>
+                <li
+                    key={songId}
+                    className="radio-recommendation-item flex min-w-0 flex-col gap-1 sm:flex-row sm:items-stretch"
+                >
                     <button
                         type="button"
                         onClick={() => onSelect(songId)}
                         disabled={disabled}
                         aria-label={`Move to ${song.title} by ${song.artist}`}
-                        className="radio-mechanical-button radio-recommendation-row group flex min-h-16 min-w-0 w-full items-center gap-2 p-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 sm:gap-3 sm:p-3"
+                        className="radio-mechanical-button radio-recommendation-row group flex min-h-16 min-w-0 flex-1 items-center gap-2 p-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 sm:gap-3 sm:p-3"
                     >
                         <span className="radio-recommendation-index" aria-hidden="true">
                             {String(index + 1).padStart(2, "0")}

@@ -9,6 +9,21 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
+describe("/api/debug", () => {
+    it("does not expose debug routes unless explicitly enabled", async () => {
+        const app = new Hono<AppContext>();
+        registerAuthAndIntegrationRoutes(app);
+
+        const response = await app.request(
+            "/api/debug/records",
+            undefined,
+            {} as Env,
+        );
+
+        expect(response.status).toBe(404);
+    });
+});
+
 const alwaysAllowRateLimit: RateLimit = {
     limit: async () => ({ success: true }),
 };
@@ -177,6 +192,53 @@ describe("/api/music/search", () => {
             delta: 1,
         });
         expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it("fails closed when the shared limiter errors without exposing its details", async () => {
+        const apiKey = "limiter-error-secret";
+        const clientIp = "203.0.113.9";
+        const limiter: RateLimit = {
+            limit: vi.fn().mockRejectedValue(new Error(apiKey)),
+        };
+        const fetcher = vi.fn<typeof fetch>();
+        vi.stubGlobal("fetch", fetcher);
+        const log = vi.spyOn(console, "error").mockImplementation(() => {});
+        const response = await musicApp({ limiter }).request(
+            "/api/music/search?query=track",
+            { headers: { "CF-Connecting-IP": clientIp } },
+            { LASTFM_API_KEY: apiKey } as Env,
+        );
+
+        expect(response.status).toBe(503);
+        await expect(response.json()).resolves.toEqual({
+            code: "music_protection_unavailable",
+            error: "Live music functionality is temporarily unavailable.",
+        });
+        expect(fetcher).not.toHaveBeenCalled();
+        expect(JSON.stringify(log.mock.calls)).not.toContain(apiKey);
+        expect(JSON.stringify(log.mock.calls)).not.toContain(clientIp);
+    });
+
+    it("returns a generic public error for upstream failures without exposing credentials", async () => {
+        const apiKey = "upstream-error-secret";
+        vi.stubGlobal(
+            "fetch",
+            vi.fn<typeof fetch>().mockRejectedValue(new Error(apiKey)),
+        );
+
+        const response = await musicApp().request(
+            "/api/music/search?query=track",
+            undefined,
+            { LASTFM_API_KEY: apiKey } as Env,
+        );
+
+        expect(response.status).toBe(502);
+        const body = await response.json();
+        expect(body).toEqual({
+            code: "upstream_error",
+            error: "Failed to search songs",
+        });
+        expect(JSON.stringify(body)).not.toContain(apiKey);
     });
 });
 

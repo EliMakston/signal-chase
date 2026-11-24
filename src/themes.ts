@@ -1,10 +1,8 @@
 /**
  * Theme catalog.
  *
- * The scaffold ships two placeholder themes: `slate` (dark default, defined
- * in styles.css) and `paper` (light example, defined in themes.css). They
- * are scaffolding, not a design — give the app its own theme before first
- * deploy:
+ * The scaffold ships `slate` and `paper` as examples, plus the app's
+ * `radio-terminal` theme:
  *   1. Add a `[data-theme="my-id"] { ... }` block in src/themes.css with
  *      the shadcn token overrides (include `color-scheme: light;` for
  *      light themes).
@@ -20,17 +18,17 @@ export const THEMES = [
   {
     id: 'slate',
     label: 'Slate',
-    description: 'Neutral dark placeholder default. Replace with your own theme.',
+    description: 'Neutral dark example theme.',
   },
   {
     id: 'paper',
     label: 'Paper',
-    description: 'Light example theme showing the token contract. Replace or delete.',
+    description: 'Light example theme showing the token contract.',
   },
   {
     id: 'radio-terminal',
     label: 'Radio Terminal',
-    description: 'Warm, instrument-inspired colors for Spotify Races.',
+    description: 'Warm, instrument-inspired colors for Signal Chase.',
   },
 ] as const
 

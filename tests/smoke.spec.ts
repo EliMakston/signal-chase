@@ -32,9 +32,48 @@ test.describe('Smoke tests', () => {
     // canonical, because React 19 would not dedupe against them on mount.
     await page.goto('/')
     await expect(page.getByTestId('static-landing')).toBeVisible()
-    await expect(page).toHaveTitle(/\S/)
+    await expect(page).toHaveTitle('Signal Chase — Musical Navigation System')
     expect(await page.locator('head meta[name="description"]').count()).toBe(1)
     expect(await page.locator('head link[rel="canonical"]').count()).toBe(1)
+  })
+
+  test('Signal Chase landing explains the beta and launches the playable game', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.locator('head link[rel="icon"]')).toHaveAttribute(
+      'href',
+      '/signal-chase.svg',
+    )
+    await expect(page.getByTestId('static-landing').locator('.signal-brand-mark')).toBeVisible()
+    expect((await page.request.get(new URL('/signal-chase.svg', page.url()).href)).status()).toBe(200)
+    await expect(
+      page.getByRole('heading', { name: 'Every song is a connection.' }),
+    ).toBeVisible()
+    await expect(page.getByText('Musical Navigation System')).toBeVisible()
+    await expect(page.getByText('PUBLIC BETA · V0.1.0')).toBeVisible()
+    await expect(page.getByRole('listitem')).toHaveCount(3)
+    await expect(page.getByText(/Live music lookup is off for this beta/)).toBeVisible()
+    await expect(page.getByText(/independent portfolio project/)).toBeVisible()
+    await expect(page.locator('body')).not.toContainText('Spotify Races')
+    await expect(page.locator('body')).not.toContainText('DeepSpace app with a static front door')
+
+    for (const width of [320, 390, 768, 1280]) {
+      await page.setViewportSize({ width, height: 900 })
+      const layout = await page.evaluate(() => ({
+        viewport: document.documentElement.clientWidth,
+        content: document.documentElement.scrollWidth,
+      }))
+      expect(layout.content, `horizontal overflow at ${width}px`).toBeLessThanOrEqual(layout.viewport)
+    }
+
+    await page.setViewportSize({ width: 1280, height: 900 })
+    const playButton = page.getByRole('link', { name: 'Play Signal Chase' })
+    await page.keyboard.press('Tab')
+    await expect(playButton).toBeFocused()
+    expect(await playButton.evaluate((element) => getComputedStyle(element).outlineStyle)).toBe('solid')
+    await page.keyboard.press('Enter')
+    await expect(page).toHaveURL(/\/game$/)
+    await expect(page.getByRole('heading', { name: 'Link the songs' })).toBeVisible()
+    await expect(page.locator('.radio-brand-label').first()).toHaveText('Signal Chase')
   })
 
   test('static contract: landing fires no auth request, opens no websocket', async ({ page }) => {

@@ -7,6 +7,7 @@ import {
 } from "react";
 import { LoaderCircle, RotateCcw, Shuffle } from "lucide-react";
 import { Button } from "../ui/Button";
+import { SignalChaseMark } from "../SignalChaseMark";
 import { getAvailableMoves } from "../../game/gameEngine";
 import {
     RACE_DIFFICULTIES,
@@ -273,8 +274,9 @@ export function GameBoard() {
             >
                 <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
                     <div>
-                        <p className="radio-brand-label">
-                            Spotify Races
+                        <p className="radio-brand-label signal-game-brand">
+                            <SignalChaseMark />
+                            <span>Signal Chase</span>
                         </p>
                         <p className="radio-technical-label mb-1">
                             Music navigation terminal
@@ -317,8 +319,9 @@ export function GameBoard() {
                 data-theme="radio-terminal"
                 className="radio-game-shell mx-auto flex min-h-full w-full max-w-3xl flex-col items-center justify-center px-4 py-12 text-center sm:px-6"
             >
-                <p className="radio-brand-label">
-                    Spotify Races
+                <p className="radio-brand-label signal-game-brand">
+                    <SignalChaseMark />
+                    <span>Signal Chase</span>
                 </p>
                 <RaceModeSelector
                     mode={customRace.mode}
@@ -360,8 +363,9 @@ export function GameBoard() {
                 data-theme="radio-terminal"
                 className="radio-game-shell mx-auto flex min-h-full w-full max-w-3xl flex-col items-center justify-center px-4 py-12 text-center sm:px-6"
             >
-                <p className="radio-brand-label">
-                    Spotify Races
+                <p className="radio-brand-label signal-game-brand">
+                    <SignalChaseMark />
+                    <span>Signal Chase</span>
                 </p>
                 <RaceModeSelector
                     mode={customRace.mode}
@@ -400,8 +404,9 @@ export function GameBoard() {
                 data-theme="radio-terminal"
                 className="radio-game-shell mx-auto flex min-h-full w-full max-w-3xl flex-col items-center justify-center px-4 py-12 text-center sm:px-6"
             >
-                <p className="radio-brand-label">
-                    Spotify Races
+                <p className="radio-brand-label signal-game-brand">
+                    <SignalChaseMark />
+                    <span>Signal Chase</span>
                 </p>
                 <RaceModeSelector
                     mode={customRace.mode}
@@ -487,7 +492,10 @@ export function GameBoard() {
         >
             <header className="radio-console-header flex flex-col gap-4 pb-4 lg:flex-row lg:items-center lg:justify-between">
                 <div className="min-w-0">
-                    <p className="radio-brand-label">Spotify Races</p>
+                    <p className="radio-brand-label signal-game-brand">
+                        <SignalChaseMark />
+                        <span>Signal Chase</span>
+                    </p>
                     <p className="radio-technical-label mb-1">Music navigation terminal</p>
                     <h1 className="radio-heading text-2xl tracking-tight sm:text-3xl">
                         Link the songs

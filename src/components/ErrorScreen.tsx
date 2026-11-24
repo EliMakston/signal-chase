@@ -1,12 +1,9 @@
 /**
  * Error decoding + a friendly error screen.
  *
- * Production React replaces error text with a numeric code and a docs link
- * (e.g. `Minified React error #310`), so a developer whose app crashes in a
- * deployed build sees only the number. `decodeReactError` turns that number
- * back into a plain-English explanation; `ErrorScreen` renders it. The most
- * common offenders are the hook-order errors (#300 / #310), which almost
- * always mean a hook was placed after an early `return`.
+ * Development builds can decode React error codes and show stack traces to
+ * help diagnose crashes. Production builds show only a generic message, so
+ * runtime details cannot leak to public visitors.
  *
  * Self-contained on purpose: it renders as the root error boundary, replacing
  * the app shell, so it must not depend on app providers or any component
@@ -97,9 +94,15 @@ export interface ErrorScreenProps {
 }
 
 export function ErrorScreen({ error, onReset }: ErrorScreenProps) {
-  const decoded = decodeReactError(error)
-  const rawMessage = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
-  const stack = error instanceof Error ? error.stack : undefined
+  const decoded = import.meta.env.DEV ? decodeReactError(error) : null
+  const rawMessage = import.meta.env.DEV
+    ? error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : ''
+    : ''
+  const stack = import.meta.env.DEV && error instanceof Error ? error.stack : undefined
   const reset = onReset ?? (() => window.location.reload())
 
   return (

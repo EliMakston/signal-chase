@@ -1,12 +1,13 @@
-# Production readiness: Spotify Races
+# Signal Chase v0.1.0: production readiness
 
-This runbook prepares the application for a small public beta. It does not
-authorize or perform a deployment. Written approval for public Last.fm use is
-still required; leave live music disabled until that approval is obtained.
+This runbook prepares Signal Chase for its Demo-first public beta. This task
+does not authorize or perform a deployment. Written approval for public
+Last.fm use is still outstanding; that approval is a prerequisite only for
+enabling live music, not for launching the playable Demo with Last.fm disabled.
 
 ## Architecture and configuration
 
-The app is a DeepSpace-managed Cloudflare Worker. The Worker serves the Vite
+Signal Chase is a DeepSpace-managed Cloudflare Worker app. The Worker serves the Vite
 build and handles `/api/music/*`; `LASTFM_API_KEY` is read only by the Worker
 and is never part of the client bundle. The music API is disabled unless the
 server-side `LASTFM_ENABLED` value is exactly `true`. A missing value (the
@@ -99,6 +100,11 @@ completed responses are fetched again.
 - Provider errors are converted to bounded public messages and stable error
   codes. Logs contain endpoint, status, duration, and limited error
   diagnostics—not API keys, IP addresses, search queries, or song metadata.
+- `/api/debug/*` is not found unless `ALLOW_DEBUG_ROUTES` is exactly `true`;
+  enabling it still requires an authenticated app admin. Keep the flag unset
+  in production. The API status utility is protected and omitted from public
+  navigation. Client error screens show exception messages and stack traces
+  only in development builds.
 - `/api/*` currently uses Hono's wildcard CORS policy without credentials.
   These are public endpoints and CORS is not authentication; other websites
   can initiate browser requests on a visitor's behalf. The rate limit helps
@@ -124,18 +130,42 @@ npm run lint
 npm run build
 ```
 
-The production build is `npm run build`. Before a future release, review the
-worktree, commit the intended changes for the default DeepSpace source, and
-confirm that the Cloudflare rate-limit namespace ID `20261123001` is unused in
-the target account. The supported deployment command is:
+The release version is `0.1.0` in the package metadata. The internal npm
+package identifier remains unchanged; the configured Worker hostname is now
+`signal-chase`. The production asset build is `npm run build`; this does not
+deploy. The supported release command is `npx deepspace deploy`; `npm run
+deploy` is the package-script alias. Both use the current app configuration
+and production (`prd`) secrets by default. The deploy command runs the build
+and deploy workflow; there is no separate `deepspace build` command in the
+installed CLI. No release command was run for this task.
+
+Before a future release:
+
+1. Review the worktree and commit the intended changes for the default
+   DeepSpace source. The deploy command syncs DeepSpace source by default.
+2. Confirm the `signal-chase.app.space` hostname is available. The Worker
+   name changed, so the existing app must be explicitly renamed on deployment.
+3. Confirm that Cloudflare rate-limit namespace ID `20261123001` is unused in
+   the target account.
+4. Confirm `LASTFM_ENABLED` is absent or not `true` for the Demo-only beta.
+   The production config may retain a Last.fm API key; the disabled server
+   opt-in prevents its use.
+5. Build and validate, then deploy only with explicit release approval.
 
 ```sh
-npx deepspace deploy
+npm run build
+npm run type-check
+npm run lint
+npm run test:unit
+npx deepspace deploy --rename
 ```
 
-This command is documented only; it was not run for this task. The first
-release should keep `LASTFM_ENABLED` absent or false until written Last.fm
-approval. Do not place production secrets in the `dev` configuration.
+`npm run deploy -- --rename` is the package-script equivalent. The installed
+CLI requires `--rename` to confirm this hostname change. These deployment
+commands are documented only; they were not run for this task. A Last.fm key
+is not required for the Demo-first launch. Do not place production secrets in
+the `dev` configuration. Never use `--ignore-stale` to bypass a stale-release
+guard without first resolving the release state.
 
 ## Monitoring and beta request budget
 
@@ -179,10 +209,16 @@ bundle rollback.
 
 ## Current release blockers
 
-- Written approval for public Last.fm use is outstanding.
+- Confirm `signal-chase.app.space` is available and authorize the app rename
+  using `npx deepspace deploy --rename`.
 - Confirm namespace ID `20261123001` is unused in the target Cloudflare
   account before the first deployment.
 - The native rate limiter is approximate per location; it cannot guarantee a
   strict global upstream quota.
-- The production secrets config contains `LASTFM_API_KEY`, but the live-music
-  opt-in remains disabled by default.
+- Written approval for public Last.fm use remains required before enabling
+  live music. It is not required for the Demo-only public beta.
+- The production config contains `LASTFM_API_KEY`; keep `LASTFM_ENABLED`
+  absent or false for the first release.
+- Confirm production secrets and bindings in the DeepSpace app before release;
+  never print secret values during that check.
+- Deploy authorization is outstanding. No deployment has been performed.

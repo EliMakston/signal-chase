@@ -25,12 +25,20 @@ function SongSearchField({
     unavailableSongId,
     dispatch,
     localSongs,
+    liveFetcher,
+    isLiveBlocked,
+    cooldownGeneration,
+    cooldownRemaining,
 }: {
     role: CustomSongRole;
     selectedSong: Song | null;
     unavailableSongId: string | null;
     dispatch: (action: CustomRaceAction) => void;
     localSongs?: readonly Song[];
+    liveFetcher: typeof fetch;
+    isLiveBlocked: () => boolean;
+    cooldownGeneration: () => number;
+    cooldownRemaining: bigint;
 }) {
     const [query, setQuery] = useState("");
     const [searchState, setSearchState] = useState<SongSearchState>({
@@ -39,7 +47,10 @@ function SongSearchField({
         error: null,
     });
     const [retryCount, setRetryCount] = useState(0);
-    const controller = useMemo(() => createSongSearchController(), []);
+    const controller = useMemo(
+        () => createSongSearchController(liveFetcher, 300, isLiveBlocked, cooldownGeneration),
+        [liveFetcher, isLiveBlocked, cooldownGeneration],
+    );
     const inputRef = useRef<HTMLInputElement>(null);
     const inputId = `${role}-song-search`;
     const feedbackId = `${inputId}-feedback`;
@@ -150,6 +161,7 @@ function SongSearchField({
                         <Button
                             variant="outline"
                             className="radio-mechanical-button"
+                            disabled={!isLocal && cooldownRemaining > 0n}
                             onClick={() => {
                                 inputRef.current?.focus();
                                 setRetryCount((count) => count + 1);
@@ -239,6 +251,10 @@ export function CustomRacePanel({
     localSongs,
     localDemo,
     readiness,
+    liveFetcher,
+    isLiveBlocked,
+    cooldownGeneration,
+    cooldownRemaining,
 }: {
     state: CustomRaceState;
     dispatch: (action: CustomRaceAction) => void;
@@ -246,6 +262,10 @@ export function CustomRacePanel({
     localSongs?: readonly Song[];
     localDemo: boolean;
     readiness?: { ready: boolean; message: string };
+    liveFetcher: typeof fetch;
+    isLiveBlocked: () => boolean;
+    cooldownGeneration: () => number;
+    cooldownRemaining: bigint;
 }) {
     const ready = canStartCustomRace(state) && (readiness?.ready ?? true);
 
@@ -270,6 +290,12 @@ export function CustomRacePanel({
                     {ready ? "Route endpoints ready" : "Select both endpoints"}
                 </p>
             </header>
+            {!localDemo && cooldownRemaining > 0n && (
+                <div className="radio-terminal-panel mb-3 p-3 text-sm text-muted-foreground">
+                    <span role="status" className="sr-only">Live music is temporarily paused. Retry when the waiting period ends.</span>
+                    <span aria-hidden="true">Live music is paused. Retry in {cooldownRemaining.toString()} seconds.</span>
+                </div>
+            )}
             <div className="radio-endpoint-pickers grid min-w-0 gap-3 md:grid-cols-2 sm:gap-4">
                 <SongSearchField
                     role="start"
@@ -277,6 +303,10 @@ export function CustomRacePanel({
                     unavailableSongId={state.targetSong?.id ?? null}
                     dispatch={dispatch}
                     localSongs={localSongs}
+                    liveFetcher={liveFetcher}
+                    isLiveBlocked={isLiveBlocked}
+                    cooldownGeneration={cooldownGeneration}
+                    cooldownRemaining={cooldownRemaining}
                 />
                 <SongSearchField
                     role="target"
@@ -284,6 +314,10 @@ export function CustomRacePanel({
                     unavailableSongId={state.startSong?.id ?? null}
                     dispatch={dispatch}
                     localSongs={localSongs}
+                    liveFetcher={liveFetcher}
+                    isLiveBlocked={isLiveBlocked}
+                    cooldownGeneration={cooldownGeneration}
+                    cooldownRemaining={cooldownRemaining}
                 />
             </div>
             {readiness && state.startSong && state.targetSong && !readiness.ready && (
@@ -303,7 +337,7 @@ export function CustomRacePanel({
                 </p>
                 <Button
                     className="radio-mechanical-button radio-primary-action w-full justify-center sm:w-auto"
-                    disabled={!ready}
+                    disabled={!ready || (!localDemo && cooldownRemaining > 0n)}
                     onClick={onStart}
                 >
                     Start Race

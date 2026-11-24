@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     LastFmMusicProvider,
     LastFmProviderError,
@@ -7,9 +7,12 @@ import { LastFmResponseCache } from "./lastFmResponseCache";
 import { buildGraphWithDiagnostics } from "./graphBuilder";
 import {
     LastFmRequestAccounting,
+    lastFmCooldown,
     LocalLastFmRequestTransport,
 } from "./lastFmRequestTransport";
 import type { LastFmRequestTransport } from "./lastFmRequestTransport";
+
+afterEach(() => lastFmCooldown.reset());
 
 function jsonResponse(payload: unknown, status = 200): Response {
     return new Response(JSON.stringify(payload), {
@@ -106,7 +109,7 @@ describe("LastFmMusicProvider", () => {
         });
         const accounting = new LastFmRequestAccounting();
         const provider = new LastFmMusicProvider("test-key", fetch, 10_000, undefined, undefined, {
-            transport: { dispatch },
+            transport: { dispatch, recordThrottle: () => 60n, remainingCooldown: () => 0n },
             accounting,
         });
 
@@ -139,6 +142,7 @@ describe("LastFmMusicProvider", () => {
         await provider.getSong("lastfm:Artist:Track");
         await expect(provider.getSong("lastfm:Artist:Track")).rejects.toMatchObject({ kind: "network" });
         await expect(provider.getSong("lastfm:Artist:Track")).rejects.toMatchObject({ kind: "rate_limited" });
+        lastFmCooldown.reset();
         await expect(provider.getSong("lastfm:Artist:Track")).rejects.toMatchObject({ kind: "timeout" });
         expect(accounting.snapshot()).toEqual({
             providerInvocations: 4, outboundAttempts: 4, cacheHits: 0,
@@ -187,7 +191,7 @@ describe("LastFmMusicProvider", () => {
         const accounting = new LastFmRequestAccounting();
         const dispatch = vi.fn<LastFmRequestTransport["dispatch"]>();
         const provider = new LastFmMusicProvider(undefined, fetch, 10_000, undefined, undefined, {
-            accounting, transport: { dispatch }, cacheEnabled: true,
+            accounting, transport: { dispatch, recordThrottle: () => 60n, remainingCooldown: () => 0n }, cacheEnabled: true,
         });
         await expect(provider.getSong("lastfm:Artist:Track")).rejects.toMatchObject({ kind: "configuration" });
         await expect(provider.getSimilarSongs("bad-id")).rejects.toMatchObject({ kind: "invalid_song_id" });
@@ -537,12 +541,12 @@ describe("LastFmMusicProvider", () => {
                 upstreamStatus: 429,
                 lastFmErrorCode: 29,
                 lastFmErrorMessage: "Rate limit exceeded",
-                retryAfterSeconds: 60,
+                retryAfterSeconds: 60n,
             },
         });
     });
 
-    it("preserves a bounded upstream Retry-After value", async () => {
+    it("preserves an upstream Retry-After value", async () => {
         const provider = new LastFmMusicProvider(
             "test-key",
             vi.fn<typeof fetch>().mockResolvedValue(
@@ -557,7 +561,7 @@ describe("LastFmMusicProvider", () => {
             provider.getSimilarSongs("lastfm:Artist:Track"),
         ).rejects.toMatchObject({
             kind: "rate_limited",
-            details: { retryAfterSeconds: 45 },
+            details: { retryAfterSeconds: 45n },
         });
     });
 

@@ -159,6 +159,118 @@ function getBacktrackingDemoRace() {
 }
 
 test.describe("end-to-end gameplay", () => {
+    test("enforces a shared live cooldown without affecting Demo or automatically retrying", async ({ page }) => {
+        let graphCalls = 0;
+        let searchCalls = 0;
+        await page.route("**/api/music/graph**", async (route) => {
+            graphCalls += 1;
+            await route.fulfill({
+                status: 429,
+                headers: { "Retry-After": "3", "X-Music-Limit-Source": "provider" },
+                json: { code: "rate_limited" },
+            });
+        });
+        await page.route("**/api/music/search**", async (route) => {
+            searchCalls += 1;
+            await route.fulfill({ json: { songs: [] } });
+        });
+        await page.goto("/game");
+        await page.getByRole("combobox", { name: "Song source" }).selectOption("lastfm");
+        await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeDisabled();
+        await expect(page.getByText(/Live music is paused. Retry in/)).toBeVisible();
+        await page.getByRole("combobox", { name: "Song source" }).selectOption("demo");
+        await expect(page.getByRole("heading", { name: "Link the songs" })).toBeVisible();
+        await page.getByRole("combobox", { name: "Race mode" }).selectOption("custom");
+        await page.getByRole("combobox", { name: "Song source" }).selectOption("lastfm");
+        await page.getByRole("searchbox", { name: "Starting song search" }).fill("Changed during cooldown");
+        await expect(page.getByRole("button", { name: "Retry search" })).toBeDisabled();
+        expect(graphCalls).toBe(1);
+        expect(searchCalls).toBe(0);
+        await expect(page.getByRole("button", { name: "Retry search" })).toBeEnabled({ timeout: 6000 });
+        expect(searchCalls).toBe(0);
+        await page.getByRole("button", { name: "Retry search" }).click();
+        await expect.poll(() => searchCalls).toBe(1);
+        expect(graphCalls).toBe(1);
+    });
+
+    test("requires a manual random-graph retry after the waiting period", async ({ page }) => {
+        let calls = 0;
+        await page.route("**/api/music/graph**", async (route) => {
+            calls += 1;
+            if (calls === 1) {
+                await route.fulfill({ status: 429, headers: { "Retry-After": "2" }, json: { code: "rate_limited" } });
+            } else {
+                await route.fulfill({ json: randomFixtureGraph });
+            }
+        });
+        await page.goto("/game");
+        await page.getByRole("combobox", { name: "Song source" }).selectOption("lastfm");
+        const retry = page.getByRole("button", { name: "Retry", exact: true });
+        await expect(retry).toBeDisabled();
+        await expect(retry).toBeEnabled({ timeout: 6000 });
+        expect(calls).toBe(1);
+        await retry.click();
+        await expect(page.getByRole("heading", { name: "Link the songs" })).toBeVisible();
+        expect(calls).toBe(2);
+    });
+
+    test("preserves a custom race during recommendation cooldown and retries only on request", async ({ page }) => {
+        const start = song("Cooldown Start");
+        const target = song("Cooldown Target");
+        let calls = 0;
+        await page.route("**/api/music/similar**", async (route) => {
+            calls += 1;
+            if (calls === 1) {
+                await route.fulfill({
+                    status: 429, headers: { "Retry-After": "3" },
+                    json: { code: "rate_limited" },
+                });
+            } else {
+                await route.fulfill({ json: { songs: [target] } });
+            }
+        });
+        await page.goto("/game");
+        await startCustomRace(page, start, target);
+        const retry = page.getByRole("button", { name: "Retry recommendations" });
+        await expect(retry).toBeDisabled();
+        await expect(page.locator('[aria-label^="Current song:"]')).toContainText(start.title);
+        await expect(page.locator('[aria-label$="moves"]').first()).toContainText("0 moves");
+        await expect(retry).toBeEnabled({ timeout: 6000 });
+        expect(calls).toBe(1);
+        await retry.click();
+        await expect(page.getByRole("button", { name: `Move to ${target.title} by ${target.artist}` })).toBeVisible();
+        expect(calls).toBe(2);
+        await moveTo(page, target);
+        await expect(page.getByRole("heading", { name: "Signal Acquired" })).toBeVisible();
+    });
+
+    test("keeps the selected custom origin while another search is throttled", async ({ page }) => {
+        const origin = song("Saved Origin");
+        let calls = 0;
+        await page.route("**/api/music/search**", async (route) => {
+            calls += 1;
+            if (calls === 1) {
+                await route.fulfill({ json: { songs: [origin] } });
+            } else {
+                await route.fulfill({
+                    status: 429, headers: { "Retry-After": "3" }, json: { code: "rate_limited" },
+                });
+            }
+        });
+        await page.goto("/game");
+        await page.getByRole("combobox", { name: "Race mode" }).selectOption("custom");
+        await page.getByRole("combobox", { name: "Song source" }).selectOption("lastfm");
+        await page.getByRole("searchbox", { name: "Starting song search" }).fill(origin.title);
+        await page.getByRole("list", { name: "Starting song search results" }).getByRole("button").click();
+        await page.getByRole("searchbox", { name: "Destination song search" }).fill("Destination");
+        await expect(page.getByRole("button", { name: "Retry search" })).toBeDisabled();
+        await expect(page.getByText("Selected origin")).toBeVisible();
+        await expect(page.getByRole("region", { name: "Starting song selection" })).toContainText(origin.title);
+        await page.getByRole("searchbox", { name: "Destination song search" }).fill("Changed destination");
+        await page.waitForTimeout(500);
+        expect(calls).toBe(2);
+    });
+
     test("plays offline Custom races across curated networks, backtracks, and shows the shortest-path benchmark", async ({
         page,
     }) => {

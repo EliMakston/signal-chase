@@ -4,8 +4,10 @@ import type { MusicProvider } from "./musicProvider";
 import { LastFmResponseCache } from "./lastFmResponseCache";
 import {
     lastFmRequestAccounting,
+    LastFmCooldownError,
     LocalLastFmRequestTransport,
 } from "./lastFmRequestTransport";
+import { parseRetryAfter } from "./retryAfter";
 import type {
     LastFmMethod,
     LastFmRequestAccounting,
@@ -39,11 +41,10 @@ interface LastFmErrorDetails {
     lastFmErrorCode?: number | string;
     lastFmErrorMessage?: string;
     upstreamErrorType?: string;
-    retryAfterSeconds?: number;
+    retryAfterSeconds?: bigint;
 }
 
 const LASTFM_REQUEST_TIMEOUT_MS = 10_000;
-const DEFAULT_RETRY_AFTER_SECONDS = 60;
 const lastFmResponseCache = new LastFmResponseCache();
 
 export class LastFmProviderError extends Error {
@@ -204,11 +205,7 @@ function errorDetails(
         details.lastFmErrorCode === 29 ||
         details.lastFmErrorCode === "29"
     ) {
-        const retryAfter = Number(retryAfterHeader);
-        details.retryAfterSeconds =
-            Number.isInteger(retryAfter) && retryAfter > 0 && retryAfter <= 3600
-                ? retryAfter
-                : DEFAULT_RETRY_AFTER_SECONDS;
+        details.retryAfterSeconds = parseRetryAfter(retryAfterHeader ?? null);
     }
 
     return details;
@@ -353,6 +350,11 @@ export class LastFmMusicProvider implements MusicProvider {
         try {
             response = await this.transport.dispatch({ method, params, apiKey: this.apiKey, signal });
         } catch (error) {
+            if (error instanceof LastFmCooldownError) {
+                throw new LastFmProviderError("rate_limited", error.message, {
+                    stage: "fetch", retryAfterSeconds: error.retryAfterSeconds,
+                });
+            }
             if (
                 signal.aborted ||
                 (error instanceof DOMException && error.name === "TimeoutError")
@@ -381,6 +383,13 @@ export class LastFmMusicProvider implements MusicProvider {
         try {
             body = await response.text();
         } catch {
+            if (response.status === 429) {
+                throw new LastFmProviderError("rate_limited", "Last.fm request was rate-limited.", {
+                    stage: "response_json",
+                    upstreamStatus: 429,
+                    retryAfterSeconds: this.transport.remainingCooldown(),
+                });
+            }
             if (signal.aborted) {
                 throw new LastFmProviderError(
                     "timeout",
@@ -408,16 +417,17 @@ export class LastFmMusicProvider implements MusicProvider {
         } catch {
             if (!response.ok) {
                 const kind = response.status === 429 ? "rate_limited" : "http";
+                const details = errorDetails(
+                    null, this.apiKey, "response_json", response.status,
+                    response.headers.get("Retry-After"),
+                );
+                if (kind === "rate_limited") {
+                    details.retryAfterSeconds = this.transport.remainingCooldown();
+                }
                 throw new LastFmProviderError(
                     kind,
                     `Last.fm request failed with status ${response.status}.`,
-                    errorDetails(
-                        null,
-                        this.apiKey,
-                        "response_json",
-                        response.status,
-                        response.headers.get("Retry-After"),
-                    ),
+                    details,
                 );
             }
             throw new LastFmProviderError(
@@ -427,17 +437,21 @@ export class LastFmMusicProvider implements MusicProvider {
             );
         }
         if (!response.ok) {
-            const kind = response.status === 429 ? "rate_limited" : "http";
+            const apiThrottled = isRecord(payload) && (payload.error === 29 || payload.error === "29");
+            const kind = response.status === 429 || apiThrottled ? "rate_limited" : "http";
+            const details = errorDetails(
+                payload, this.apiKey, "upstream_http", response.status,
+                response.headers.get("Retry-After"),
+            );
+            if (response.status === 429) {
+                details.retryAfterSeconds = this.transport.remainingCooldown();
+            } else if (apiThrottled) {
+                details.retryAfterSeconds = this.transport.recordThrottle(response.headers.get("Retry-After"));
+            }
             throw new LastFmProviderError(
                 kind,
                 `Last.fm request failed with status ${response.status}.`,
-                errorDetails(
-                    payload,
-                    this.apiKey,
-                    "upstream_http",
-                    response.status,
-                    response.headers.get("Retry-After"),
-                ),
+                details,
             );
         }
         if (!isRecord(payload)) {
@@ -449,10 +463,14 @@ export class LastFmMusicProvider implements MusicProvider {
         }
         if ("error" in payload) {
             const rateLimited = payload.error === 29 || payload.error === "29";
+            const details = errorDetails(payload, this.apiKey, "lastfm_api", response.status, response.headers.get("Retry-After"));
+            if (rateLimited) {
+                details.retryAfterSeconds = this.transport.recordThrottle(response.headers.get("Retry-After"));
+            }
             throw new LastFmProviderError(
                 rateLimited ? "rate_limited" : "api",
                 "Last.fm reported an API error.",
-                errorDetails(payload, this.apiKey, "lastfm_api", response.status),
+                details,
             );
         }
 

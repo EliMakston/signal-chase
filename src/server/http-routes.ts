@@ -182,6 +182,7 @@ function rateLimitResponse(
 ) {
   if (outcome === 'limited') {
     c.header('Retry-After', String(MUSIC_RATE_LIMIT_RETRY_AFTER_SECONDS))
+    c.header('X-Music-Limit-Source', 'client')
     return c.json(
       {
         code: 'rate_limited',
@@ -207,6 +208,7 @@ function upstreamFailureResponse(
   if (error instanceof LastFmProviderError && error.kind === 'rate_limited') {
     const retryAfter = error.details.retryAfterSeconds ?? MUSIC_RATE_LIMIT_RETRY_AFTER_SECONDS
     c.header('Retry-After', String(retryAfter))
+    c.header('X-Music-Limit-Source', 'provider')
     return c.json(
       {
         code: 'rate_limited',
@@ -383,6 +385,7 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
           : error
       if (error instanceof GraphBuildCapacityError) {
         c.header('Retry-After', '30')
+        c.header('X-Music-Limit-Source', 'capacity')
         return c.json(
           {
             code: 'music_capacity',

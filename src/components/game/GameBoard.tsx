@@ -2,6 +2,7 @@ import {
     useEffect,
     useReducer,
     useRef,
+    useState,
     type Dispatch,
     type Ref,
 } from "react";
@@ -47,6 +48,17 @@ import {
     getRecommendationPresentation,
 } from "./gameBoardPresentation";
 import { getPlayerFacingErrorMessage } from "./playerFacingError";
+import { LiveMusicCooldown } from "./liveMusicCooldown";
+
+function CooldownNotice({ remaining }: { remaining: bigint }) {
+    if (remaining <= 0n) return null;
+    return (
+        <div className="radio-terminal-panel p-3 text-sm text-muted-foreground">
+            <span role="status" className="sr-only">Live music is temporarily paused. Retry when the waiting period ends.</span>
+            <span aria-hidden="true">Live music is paused. Retry in {remaining.toString()} seconds.</span>
+        </div>
+    );
+}
 
 function RaceModeSelector({
     mode,
@@ -215,6 +227,17 @@ function DemoGraphSelector({
 }
 
 export function GameBoard() {
+    const [cooldown] = useState(() => new LiveMusicCooldown());
+    const [remaining, setRemaining] = useState(0n);
+    useEffect(() => {
+        const update = () => setRemaining(cooldown.remaining());
+        const unsubscribe = cooldown.subscribe(update);
+        const timer = setInterval(update, 1000);
+        return () => {
+            unsubscribe();
+            clearInterval(timer);
+        };
+    }, [cooldown]);
     const currentSongHeadingRef = useRef<HTMLHeadingElement>(null);
     const wasCustomRacePlaying = useRef(false);
     const raceModeSelectRef = useRef<HTMLSelectElement>(null);
@@ -301,7 +324,7 @@ export function GameBoard() {
         const controller = new AbortController();
         let current = true;
 
-        void fetchLastFmGraphData(fetch, controller.signal).then(
+        void fetchLastFmGraphData(cooldown.fetch, controller.signal).then(
             ({ graph, expandedSongIds }) => {
                 if (current) {
                     dispatch({
@@ -330,7 +353,7 @@ export function GameBoard() {
             current = false;
             controller.abort();
         };
-    }, [customRace.mode, state.mode, state.requestId, state.status]);
+    }, [cooldown, customRace.mode, state.mode, state.requestId, state.status]);
 
     const activeSongId = state.session?.gameState.currentSongId;
     const exploration = state.session?.exploration;
@@ -342,7 +365,7 @@ export function GameBoard() {
 
     useEffect(() => {
         if (customRace.mode !== "random" && !customRace.playing) return;
-        triggerCurrentSongExpansion(state, dispatch);
+        triggerCurrentSongExpansion(state, dispatch, cooldown.fetch);
     }, [
         activeSongId,
         customRace.mode,
@@ -355,6 +378,7 @@ export function GameBoard() {
         state.session,
         state.session?.gameState.status,
         state.status,
+        cooldown,
     ]);
 
     if (customRace.mode === "custom" && !customRace.playing) {
@@ -418,6 +442,10 @@ export function GameBoard() {
                     localDemo={localDemo}
                     localSongs={localSongs}
                     readiness={readiness}
+                    liveFetcher={cooldown.fetch}
+                    isLiveBlocked={cooldown.isActive}
+                    cooldownGeneration={cooldown.getGeneration}
+                    cooldownRemaining={localDemo ? 0n : remaining}
                     onStart={() => {
                         const startSong = customRace.startSong;
                         const targetSong = customRace.targetSong;
@@ -510,8 +538,10 @@ export function GameBoard() {
                 <p role="alert" className="mt-3 max-w-md text-muted-foreground">
                     {state.error}
                 </p>
+                {state.mode === "lastfm" && <CooldownNotice remaining={remaining} />}
                 <Button
                     className="radio-mechanical-button mt-6"
+                    disabled={state.mode === "lastfm" && remaining > 0n}
                     onClick={() => dispatch({ type: "retry-load" })}
                 >
                     <RotateCcw aria-hidden="true" />
@@ -565,6 +595,7 @@ export function GameBoard() {
                 {state.mode === "lastfm" && (
                     <Button
                         className="radio-mechanical-button mt-6"
+                        disabled={remaining > 0n}
                         onClick={() => dispatch({ type: "retry-load" })}
                     >
                         <RotateCcw aria-hidden="true" />
@@ -668,6 +699,7 @@ export function GameBoard() {
                     )}
                 </div>
             </header>
+            {mode === "lastfm" && <CooldownNotice remaining={remaining} />}
 
             <nav
                 aria-label="Race controls"
@@ -842,6 +874,7 @@ export function GameBoard() {
                                     <Button
                                         variant="outline"
                                         className="radio-mechanical-button mt-3"
+                                        disabled={mode === "lastfm" && remaining > 0n}
                                         onClick={() => {
                                             currentSongHeadingRef.current?.focus({
                                                 preventScroll: true,

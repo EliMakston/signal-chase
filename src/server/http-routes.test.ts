@@ -3,8 +3,10 @@ import { Hono } from "hono";
 import type { AppContext, Env } from "../../worker.js";
 import type { SerializedSongGraph } from "../game/graphSerialization";
 import { registerAuthAndIntegrationRoutes } from "./http-routes";
+import { lastFmCooldown } from "../services/lastFmRequestTransport";
 
 afterEach(() => {
+    lastFmCooldown.reset();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
 });
@@ -176,6 +178,7 @@ describe("/api/music/search", () => {
 
         expect(response.status).toBe(429);
         expect(response.headers.get("Retry-After")).toBe("60");
+        expect(response.headers.get("X-Music-Limit-Source")).toBe("provider");
         await expect(response.json()).resolves.toEqual({
             code: "rate_limited",
             error: "Live music requests are temporarily rate-limited.",
@@ -689,11 +692,33 @@ describe("/api/music/graph", () => {
         const url = graphUrl("lastfm:Band:RetrySeed");
 
         const failed = await app.request(url, undefined, { LASTFM_API_KEY: apiKey } as Env);
+        const blocked = await app.request(url, undefined, { LASTFM_API_KEY: apiKey } as Env);
+        lastFmCooldown.reset();
         const succeeded = await app.request(url, undefined, { LASTFM_API_KEY: apiKey } as Env);
 
         expect(failed.status).toBe(429);
+        expect(blocked.status).toBe(429);
         expect(succeeded.status).toBe(200);
         expect(fetcher).toHaveBeenCalledTimes(3);
+    });
+
+    it("propagates throttling during graph expansion and blocks other provider methods", async () => {
+        const fetcher = vi.fn<typeof fetch>()
+            .mockResolvedValueOnce(new Response(JSON.stringify({ track: { name: "Seed", artist: "Band" } })))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ error: 29 }), {
+                headers: { "Retry-After": "7200" },
+            }));
+        vi.stubGlobal("fetch", fetcher);
+        const app = graphApp();
+        const env = { LASTFM_API_KEY: apiKey } as Env;
+        const graph = await app.request(graphUrl("lastfm:Band:Seed"), undefined, env);
+        expect(graph.status).toBe(429);
+        expect(graph.headers.get("Retry-After")).toBe("7200");
+        expect(graph.headers.get("X-Music-Limit-Source")).toBe("provider");
+        const search = await app.request("/api/music/search?query=test", undefined, env);
+        expect(search.status).toBe(429);
+        expect(search.headers.get("Retry-After")).toBe("7200");
+        expect(fetcher).toHaveBeenCalledTimes(2);
     });
 
     it("coalesces simultaneous requests for the same seed", async () => {

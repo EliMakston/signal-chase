@@ -114,6 +114,8 @@ export async function fetchSongSearchResults(
 export function createSongSearchController(
     fetcher: typeof fetch = fetch,
     debounceMs = 300,
+    isBlocked: () => boolean = () => false,
+    cooldownGeneration: () => number = () => 0,
 ): {
     search(query: string, update: (state: SongSearchState) => void): () => void;
 } {
@@ -139,8 +141,17 @@ export function createSongSearchController(
                 return cancel;
             }
 
+            if (isBlocked()) {
+                update({ status: "error", songs: [], error: "Live music is cooling down. Please wait before retrying." });
+                return cancel;
+            }
             update({ status: "loading", songs: [], error: null });
+            const generationAtSchedule = cooldownGeneration();
             timer = setTimeout(() => {
+                if (isBlocked() || cooldownGeneration() !== generationAtSchedule) {
+                    update({ status: "error", songs: [], error: "Live music is cooling down. Please wait before retrying." });
+                    return;
+                }
                 const requestController = new AbortController();
                 controller = requestController;
                 void fetchSongSearchResults(

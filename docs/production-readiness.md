@@ -87,6 +87,28 @@ timed-out attempts. It does not retry. The interface permits a future
 coordinator-owned transport to replace it; such an implementation must account
 for every actual network dispatch.
 
+HTTP 429 and Last.fm error 29 (including HTTP 200 responses) activate a
+shared isolate-local provider cooldown across all three methods. HTTP 429
+activates it when headers arrive; error 29 is recognized after parsing the
+body. In-flight requests can still complete, and concurrent throttling
+responses can extend but never shorten the deadline. The transport checks
+the cooldown immediately before dispatch; rejected calls count as provider
+invocations but not outbound attempts. Cached responses, when explicitly
+enabled, can still be served without an outbound request. A throttled graph
+build fails rather than returning a partial graph.
+
+Retry-After accepts positive integer seconds or an HTTP date; missing,
+invalid, zero, negative, or expired values use the existing 60-second
+fallback. Long valid periods are not capped. API responses retain the
+`rate_limited` code and include `Retry-After`; `X-Music-Limit-Source` is
+`provider`, `client`, or `capacity` to distinguish the source without
+exposing upstream details. The browser shares a live-music cooldown across
+graph loading, search, and exploration, displays the remaining time, and
+requires an explicit retry. Demo remains available. This browser state is
+local to the mounted game; the server cooldown is local to one isolate,
+not global, persistent, or coordinated across locations. Restarting an isolate
+loses its cooldown. Neither is an application-wide guarantee.
+
 The local in-memory accounting distinguishes provider method invocations,
 outbound attempts and validated cache hits. Provider invocations include calls
 that fail input or configuration validation and blank searches; a cache hit
@@ -138,7 +160,7 @@ capped at four active builds per Worker isolate, so the effective aggregate
 limit grows with the number of isolates. Search and similar-track calls have
 no global concurrency limit. There is no global maximum for Last.fm
 requests-per-second or aggregate request volume. The Worker returns `429` for
-Last.fm error 29 or HTTP 429 with a bounded `Retry-After` value, defaulting to
+Last.fm error 29 or HTTP 429 with a `Retry-After` value, defaulting to
 60 seconds; it does not automatically retry.
 
 Do not present the application rate limit as a permitted Last.fm rate. Last.fm

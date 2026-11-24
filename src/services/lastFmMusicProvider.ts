@@ -2,10 +2,16 @@ import type { Song } from "../game/types";
 import { getSafeLastFmTrackUrl } from "../game/lastFmUrl";
 import type { MusicProvider } from "./musicProvider";
 import { LastFmResponseCache } from "./lastFmResponseCache";
+import {
+    lastFmRequestAccounting,
+    LocalLastFmRequestTransport,
+} from "./lastFmRequestTransport";
+import type {
+    LastFmMethod,
+    LastFmRequestAccounting,
+    LastFmRequestTransport,
+} from "./lastFmRequestTransport";
 
-const LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/";
-const LASTFM_USER_AGENT =
-    "SignalChase/0.1.1 (https://signal-chase.app.space)";
 const SONG_ID_PREFIX = "lastfm:";
 
 type LastFmErrorKind =
@@ -209,79 +215,96 @@ function errorDetails(
 }
 
 export class LastFmMusicProvider implements MusicProvider {
+    private readonly transport: LastFmRequestTransport;
+    private readonly accounting: LastFmRequestAccounting;
+    private readonly cacheEnabled: boolean;
+
     constructor(
         private readonly apiKey: string | undefined,
-        private readonly fetcher: typeof fetch = fetch,
+        fetcher: typeof fetch = fetch,
         private readonly timeoutMs = LASTFM_REQUEST_TIMEOUT_MS,
         private readonly overallSignal?: AbortSignal,
         private readonly responseCache: LastFmResponseCache = lastFmResponseCache,
-    ) {}
+        options: {
+            cacheEnabled?: boolean;
+            transport?: LastFmRequestTransport;
+            accounting?: LastFmRequestAccounting;
+        } = {},
+    ) {
+        this.accounting = options.accounting ?? lastFmRequestAccounting;
+        this.transport = options.transport ?? new LocalLastFmRequestTransport(fetcher, this.accounting);
+        this.cacheEnabled = options.cacheEnabled === true;
+    }
 
     async getSong(songId: string): Promise<Song | null> {
+        this.accounting.recordProviderInvocation();
         const { artist, title } = decodeSongId(songId);
-        const response = await this.request("track.getInfo", { artist, track: title });
-
-        if (!("track" in response)) {
-            return null;
-        }
-        if (!isRecord(response.track)) {
-            throw new LastFmProviderError(
-                "malformed",
-                "Last.fm returned malformed track information.",
-                { stage: "response_validation" },
-            );
-        }
-
-        return normalizeTrack(response.track);
+        return this.request("track.getInfo", { artist, track: title }, (response) => {
+            if (!("track" in response)) return { value: null, cacheable: false };
+            if (!isRecord(response.track)) {
+                throw new LastFmProviderError(
+                    "malformed",
+                    "Last.fm returned malformed track information.",
+                    { stage: "response_validation" },
+                );
+            }
+            const song = normalizeTrack(response.track);
+            return { value: song, cacheable: song !== null };
+        });
     }
 
     async getSimilarSongs(songId: string): Promise<Song[]> {
+        this.accounting.recordProviderInvocation();
         const { artist, title } = decodeSongId(songId);
-        const response = await this.request("track.getsimilar", {
+        return this.request("track.getsimilar", {
             artist,
             track: title,
+        }, (response) => {
+            if (!isRecord(response.similartracks)) {
+                throw new LastFmProviderError(
+                    "malformed",
+                    "Last.fm returned malformed similar-track data.",
+                    { stage: "response_validation" },
+                );
+            }
+            const songs = listFromResponse(response.similartracks.track, "similar-track")
+                .map(normalizeTrack);
+            return {
+                value: songs.filter((song): song is Song => song !== null),
+                cacheable: songs.every((song) => song !== null),
+            };
         });
-
-        if (!isRecord(response.similartracks)) {
-            throw new LastFmProviderError(
-                "malformed",
-                "Last.fm returned malformed similar-track data.",
-                { stage: "response_validation" },
-            );
-        }
-
-        return listFromResponse(response.similartracks.track, "similar-track")
-            .map(normalizeTrack)
-            .filter((song): song is Song => song !== null);
     }
 
     async searchSongs(query: string): Promise<Song[]> {
+        this.accounting.recordProviderInvocation();
         const track = query.trim();
         if (!track) {
             return [];
         }
 
-        const response = await this.request("track.search", { track });
-        if (!isRecord(response.results) || !isRecord(response.results.trackmatches)) {
-            throw new LastFmProviderError(
-                "malformed",
-                "Last.fm returned malformed search results.",
-                { stage: "response_validation" },
-            );
-        }
-
-        return listFromResponse(
-            response.results.trackmatches.track,
-            "search-result",
-        )
-            .map(normalizeTrack)
-            .filter((song): song is Song => song !== null);
+        return this.request("track.search", { track }, (response) => {
+            if (!isRecord(response.results) || !isRecord(response.results.trackmatches)) {
+                throw new LastFmProviderError(
+                    "malformed",
+                    "Last.fm returned malformed search results.",
+                    { stage: "response_validation" },
+                );
+            }
+            const songs = listFromResponse(response.results.trackmatches.track, "search-result")
+                .map(normalizeTrack);
+            return {
+                value: songs.filter((song): song is Song => song !== null),
+                cacheable: songs.every((song) => song !== null),
+            };
+        });
     }
 
-    private async request(
-        method: string,
+    private async request<T>(
+        method: LastFmMethod,
         params: Record<string, string>,
-    ): Promise<LastFmRecord> {
+        validate: (response: LastFmRecord) => { value: T; cacheable: boolean },
+    ): Promise<T> {
         if (!this.apiKey) {
             throw new LastFmProviderError(
                 "configuration",
@@ -290,25 +313,35 @@ export class LastFmMusicProvider implements MusicProvider {
             );
         }
 
-        const searchParams = new URLSearchParams({
-            method,
-            api_key: this.apiKey,
-            format: "json",
-            ...params,
-        });
-        const requestUrl = `${LASTFM_API_URL}?${searchParams}`;
         const cacheKey = `${method}?${new URLSearchParams(
             Object.entries(params).sort(([left], [right]) =>
                 left.localeCompare(right),
             ),
         )}`;
-        const cachedBody = this.responseCache.get(cacheKey);
-        if (cachedBody !== undefined) {
-            try {
-                const cachedPayload: unknown = JSON.parse(cachedBody);
-                if (isRecord(cachedPayload)) return cachedPayload;
-            } catch {
-                // Invalid cached entries are ignored; the bounded cache is in-memory only.
+        if (this.cacheEnabled) {
+            const cachedBody = this.responseCache.get(cacheKey);
+            if (cachedBody !== undefined) {
+                let cachedPayload: unknown;
+                try {
+                    cachedPayload = JSON.parse(cachedBody);
+                } catch {
+                    throw new LastFmProviderError("malformed", "Cached Last.fm response contains invalid JSON.", {
+                        stage: "response_json",
+                    });
+                }
+                if (!isRecord(cachedPayload) || "error" in cachedPayload) {
+                    throw new LastFmProviderError("malformed", "Cached Last.fm response is invalid.", {
+                        stage: "response_validation",
+                    });
+                }
+                const result = validate(cachedPayload);
+                if (!result.cacheable) {
+                    throw new LastFmProviderError("malformed", "Cached Last.fm response is invalid.", {
+                        stage: "response_validation",
+                    });
+                }
+                this.accounting.recordCacheHit();
+                return result.value;
             }
         }
 
@@ -318,14 +351,7 @@ export class LastFmMusicProvider implements MusicProvider {
             ? AbortSignal.any([this.overallSignal, requestTimeout])
             : requestTimeout;
         try {
-            response = await this.fetcher.call(
-                globalThis,
-                requestUrl,
-                {
-                    headers: { "User-Agent": LASTFM_USER_AGENT },
-                    signal,
-                },
-            );
+            response = await this.transport.dispatch({ method, params, apiKey: this.apiKey, signal });
         } catch (error) {
             if (
                 signal.aborted ||
@@ -430,7 +456,10 @@ export class LastFmMusicProvider implements MusicProvider {
             );
         }
 
-        this.responseCache.set(cacheKey, body, response.headers);
-        return payload;
+        const result = validate(payload);
+        if (this.cacheEnabled && result.cacheable) {
+            this.responseCache.set(cacheKey, body, response.headers);
+        }
+        return result.value;
     }
 }

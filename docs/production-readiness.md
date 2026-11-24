@@ -12,6 +12,10 @@ and is never part of the client bundle. The music API is disabled unless the
 server-side `LASTFM_ENABLED` value is exactly `true`. A missing value (the
 default) disables search, similar-track lookup, and graph-building before any
 upstream request. Demo mode does not depend on these endpoints.
+Response caching is controlled independently: `LASTFM_CACHE_ENABLED` must be
+exactly `true` to permit cache reads and writes. It is disabled by default,
+including when live music is enabled; enabling it does not enable live music.
+Obtain explicit contractual permission before enabling caching.
 
 Runtime configuration is split across the app and platform:
 
@@ -21,7 +25,7 @@ Runtime configuration is split across the app and platform:
 | Static/Worker bindings | `ASSETS`, `MUSIC_API_LIMITER`, and the declared app Durable Objects | DeepSpace/Cloudflare deployment from `wrangler.toml` |
 | DeepSpace-managed runtime values | `AUTH_JWT_PUBLIC_KEY`, `AUTH_JWT_ISSUER`, `AUTH_WORKER_URL`, `APP_OWNER_JWT`, `OWNER_USER_ID` | Supplied by the DeepSpace app runtime; do not copy them into source or set them manually |
 | Optional platform values | `PLATFORM_WORKER`, `API_WORKER`, `APP_IDENTITY_TOKEN`, debug/native-auth settings | Platform bindings or `wrangler.toml`; only configure when the corresponding feature is used |
-| Last.fm secrets | `LASTFM_API_KEY`, `LASTFM_ENABLED` | DeepSpace secrets config (`prd` for production); required only to enable live music |
+| Last.fm server configuration | `LASTFM_API_KEY`, `LASTFM_ENABLED`, `LASTFM_CACHE_ENABLED` | DeepSpace secrets config (`prd` for production); key and live opt-in are required for live music, cache opt-in is separate |
 
 Use separate DeepSpace secrets configurations:
 
@@ -74,7 +78,24 @@ The graph builder retains its existing 30-request, 50-song, depth-3, and
 6-recommendations-per-song bounds. Individual upstream requests time out after
 10 seconds; graph builds have a 30-second overall timeout. At most four graph
 builds are active per Worker isolate, with identical in-flight seed builds
-coalesced. Completed Last.fm graph results are not cached.
+using the same cache policy coalesced. Completed Last.fm graph results are not cached.
+
+All three Last.fm methods use a typed, injectable request transport. The local
+transport adds the fixed origin and identifiable User-Agent, and records an
+outbound attempt immediately before dispatch, including failed, throttled and
+timed-out attempts. It does not retry. The interface permits a future
+coordinator-owned transport to replace it; such an implementation must account
+for every actual network dispatch.
+
+The local in-memory accounting distinguishes provider method invocations,
+outbound attempts and validated cache hits. Provider invocations include calls
+that fail input or configuration validation and blank searches; a cache hit
+does not dispatch a request. Counters are process/isolate-local, reset on
+restart, and are not global metrics or a quota. Incoming application requests
+are separate from all three counters and are governed by the existing weighted
+limiter. The graph diagnostic `upstreamRequestCount` counts graph provider
+invocations, including cache hits, rather than actual network attempts; it
+continues to enforce the existing per-build provider-call budget.
 
 Cloudflare's native rate-limit binding is an approximate, eventually
 consistent limit per Cloudflare location, not a strict global quota or a
@@ -86,7 +107,8 @@ before enabling the feature. A strict cross-location ceiling would require a
 centralized limiter such as a Durable Object and is intentionally not added
 for this beta preparation.
 
-Successful JSON responses are cached only when the upstream response explicitly
+When `LASTFM_CACHE_ENABLED` is exactly `true`, method-validated successful
+JSON responses are cached only when the upstream response explicitly
 allows freshness through `s-maxage`, `max-age`, or `Expires`. `Age` is
 subtracted; `no-store`, `no-cache`, `private`, `Vary`, and cookie-bearing
 responses are not retained, and stale entries are never served. The in-memory,
@@ -96,7 +118,8 @@ isolate, and at most five minutes. Browser-facing music API responses use
 isolate and do **not** establish compliance with any aggregate 100 MB storage
 limit. Do not claim that they guarantee aggregate storage compliance. Confirm
 that caching permitted by the response headers is also consistent with the
-applicable Last.fm terms before enabling live music.
+applicable Last.fm terms before enabling caching. With the flag disabled the
+provider bypasses cache reads and writes; no persistent cache is introduced.
 
 ## Rate-limit and concurrency review
 
@@ -287,6 +310,9 @@ bundle rollback.
   strict global upstream quota.
 - Written approval for public Last.fm use remains required before enabling
   live music. It is not required for the Demo-only public beta.
+- Caching requires independent contractual permission and, if required,
+  aggregate storage accounting; leave `LASTFM_CACHE_ENABLED` unset or false
+  until those conditions are addressed.
 - The production config contains `LASTFM_API_KEY`; keep `LASTFM_ENABLED`
   absent or false for the first release.
 - Confirm production secrets and bindings in the DeepSpace app before release;

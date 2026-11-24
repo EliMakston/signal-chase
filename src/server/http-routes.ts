@@ -86,8 +86,10 @@ class GraphBuildCapacityError extends Error {
 async function getOrBuildGraph(
   seedSongId: string,
   apiKey: string,
+  cacheEnabled: boolean,
 ): Promise<SerializedSongGraph> {
-  const activeBuild = graphBuildsInFlight.get(seedSongId)
+  const buildKey = `${cacheEnabled}:${seedSongId}`
+  const activeBuild = graphBuildsInFlight.get(buildKey)
   if (activeBuild) return activeBuild
   if (graphBuildsInFlight.size >= MAX_ACTIVE_GRAPH_BUILDS) {
     throw new GraphBuildCapacityError()
@@ -98,6 +100,8 @@ async function getOrBuildGraph(
     fetch,
     10_000,
     AbortSignal.timeout(GRAPH_BUILD_TIMEOUT_MS),
+    undefined,
+    { cacheEnabled },
   )
   const build = buildGraphWithDiagnostics(provider, seedSongId, {
     maxDepth: 3,
@@ -111,12 +115,12 @@ async function getOrBuildGraph(
     }
   })
 
-  graphBuildsInFlight.set(seedSongId, build)
+  graphBuildsInFlight.set(buildKey, build)
   try {
     return await build
   } finally {
-    if (graphBuildsInFlight.get(seedSongId) === build) {
-      graphBuildsInFlight.delete(seedSongId)
+    if (graphBuildsInFlight.get(buildKey) === build) {
+      graphBuildsInFlight.delete(buildKey)
     }
   }
 }
@@ -261,7 +265,9 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
     }
 
     try {
-      const provider = new LastFmMusicProvider(apiKey)
+      const provider = new LastFmMusicProvider(apiKey, fetch, undefined, undefined, undefined, {
+        cacheEnabled: c.env.LASTFM_CACHE_ENABLED === 'true',
+      })
       const songs = await provider.searchSongs(query)
       return c.json({ songs: songs.slice(0, 10) })
     } catch (error) {
@@ -306,7 +312,9 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
     }
 
     try {
-      const provider = new LastFmMusicProvider(c.env.LASTFM_API_KEY)
+      const provider = new LastFmMusicProvider(c.env.LASTFM_API_KEY, fetch, undefined, undefined, undefined, {
+        cacheEnabled: c.env.LASTFM_CACHE_ENABLED === 'true',
+      })
       const songs = await provider.getSimilarSongs(songId)
       return c.json({ songs })
     } catch (error) {
@@ -363,7 +371,7 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
     }
 
     try {
-      return c.json(await getOrBuildGraph(canonicalSeedSongId, apiKey))
+      return c.json(await getOrBuildGraph(canonicalSeedSongId, apiKey, c.env.LASTFM_CACHE_ENABLED === 'true'))
     } catch (error) {
       if (error instanceof GraphBuildError && error.kind === 'seed_not_found') {
         return c.json({ error: 'Seed song not found' }, 400)

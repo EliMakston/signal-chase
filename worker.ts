@@ -117,6 +117,8 @@ export interface Env extends DOBindings<typeof __DO_MANIFEST__> {
   LASTFM_API_KEY?: string
   /** Explicit opt-in; absent or any value other than "true" disables Last.fm. */
   LASTFM_ENABLED?: string
+  /** Independent opt-in for isolate-local Last.fm response caching. */
+  LASTFM_CACHE_ENABLED?: string
   /** Cloudflare's distributed, approximate per-location request limiter. */
   MUSIC_API_LIMITER?: RateLimit
   /**

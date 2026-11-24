@@ -4,6 +4,12 @@ import {
     LastFmProviderError,
 } from "./lastFmMusicProvider";
 import { LastFmResponseCache } from "./lastFmResponseCache";
+import { buildGraphWithDiagnostics } from "./graphBuilder";
+import {
+    LastFmRequestAccounting,
+    LocalLastFmRequestTransport,
+} from "./lastFmRequestTransport";
+import type { LastFmRequestTransport } from "./lastFmRequestTransport";
 
 function jsonResponse(payload: unknown, status = 200): Response {
     return new Response(JSON.stringify(payload), {
@@ -77,6 +83,7 @@ describe("LastFmMusicProvider", () => {
             10_000,
             undefined,
             cache,
+            { cacheEnabled: true },
         );
 
         await provider.getSong("lastfm:Artist:Track");
@@ -86,6 +93,179 @@ describe("LastFmMusicProvider", () => {
         now = 2_000;
         await provider.getSong("lastfm:Artist:Track");
         expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it("routes every method through an injectable transport", async () => {
+        const dispatch = vi.fn<LastFmRequestTransport["dispatch"]>(async ({ method }) => {
+            const payload = method === "track.getInfo"
+                ? { track: { name: "Track", artist: "Artist" } }
+                : method === "track.getsimilar"
+                  ? { similartracks: { track: [] } }
+                  : { results: { trackmatches: { track: [] } } };
+            return jsonResponse(payload);
+        });
+        const accounting = new LastFmRequestAccounting();
+        const provider = new LastFmMusicProvider("test-key", fetch, 10_000, undefined, undefined, {
+            transport: { dispatch },
+            accounting,
+        });
+
+        await provider.getSong("lastfm:Artist:Track");
+        await provider.getSimilarSongs("lastfm:Artist:Track");
+        await provider.searchSongs("Track");
+        expect(dispatch.mock.calls.map(([request]) => request.method)).toEqual([
+            "track.getInfo", "track.getsimilar", "track.search",
+        ]);
+        expect(accounting.snapshot()).toEqual({
+            providerInvocations: 3, outboundAttempts: 0, cacheHits: 0,
+        });
+    });
+
+    it("counts successful, failed, throttled and timed-out outbound attempts", async () => {
+        const accounting = new LastFmRequestAccounting();
+        const fetcher = vi.fn<typeof fetch>()
+            .mockImplementationOnce(async () => jsonResponse({ track: { name: "Track", artist: "Artist" } }))
+            .mockRejectedValueOnce(new TypeError("network failure"))
+            .mockImplementationOnce(async () => jsonResponse({ error: 29 }, 429))
+            .mockImplementationOnce((_input, init) => new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+            }));
+        const transport = new LocalLastFmRequestTransport(fetcher, accounting);
+        const provider = new LastFmMusicProvider("test-key", fetcher, 5, undefined, undefined, {
+            transport,
+            accounting,
+        });
+
+        await provider.getSong("lastfm:Artist:Track");
+        await expect(provider.getSong("lastfm:Artist:Track")).rejects.toMatchObject({ kind: "network" });
+        await expect(provider.getSong("lastfm:Artist:Track")).rejects.toMatchObject({ kind: "rate_limited" });
+        await expect(provider.getSong("lastfm:Artist:Track")).rejects.toMatchObject({ kind: "timeout" });
+        expect(accounting.snapshot()).toEqual({
+            providerInvocations: 4, outboundAttempts: 4, cacheHits: 0,
+        });
+    });
+
+    it("bypasses cache reads and writes by default, even with an injected cache", async () => {
+        const cache = new LastFmResponseCache();
+        const get = vi.spyOn(cache, "get");
+        const set = vi.spyOn(cache, "set");
+        const accounting = new LastFmRequestAccounting();
+        const fetcher = vi.fn<typeof fetch>(async () => new Response(
+            JSON.stringify({ track: { name: "Track", artist: "Artist" } }),
+            { headers: { "Cache-Control": "max-age=60" } },
+        ));
+        const provider = new LastFmMusicProvider("test-key", fetcher, 10_000, undefined, cache, { accounting });
+
+        await provider.getSong("lastfm:Artist:Track");
+        await provider.getSong("lastfm:Artist:Track");
+        expect(get).not.toHaveBeenCalled();
+        expect(set).not.toHaveBeenCalled();
+        expect(accounting.snapshot()).toEqual({
+            providerInvocations: 2, outboundAttempts: 2, cacheHits: 0,
+        });
+    });
+
+    it("counts validated cache hits separately from network attempts", async () => {
+        const cache = new LastFmResponseCache();
+        const accounting = new LastFmRequestAccounting();
+        const fetcher = vi.fn<typeof fetch>(async () => new Response(
+            JSON.stringify({ track: { name: "Track", artist: "Artist" } }),
+            { headers: { "Cache-Control": "max-age=60" } },
+        ));
+        const provider = new LastFmMusicProvider("test-key", fetcher, 10_000, undefined, cache, {
+            accounting, cacheEnabled: true,
+        });
+
+        await provider.getSong("lastfm:Artist:Track");
+        await provider.getSong("lastfm:Artist:Track");
+        expect(accounting.snapshot()).toEqual({
+            providerInvocations: 2, outboundAttempts: 1, cacheHits: 1,
+        });
+    });
+
+    it("does not dispatch for missing credentials, invalid IDs, or empty searches", async () => {
+        const accounting = new LastFmRequestAccounting();
+        const dispatch = vi.fn<LastFmRequestTransport["dispatch"]>();
+        const provider = new LastFmMusicProvider(undefined, fetch, 10_000, undefined, undefined, {
+            accounting, transport: { dispatch }, cacheEnabled: true,
+        });
+        await expect(provider.getSong("lastfm:Artist:Track")).rejects.toMatchObject({ kind: "configuration" });
+        await expect(provider.getSimilarSongs("bad-id")).rejects.toMatchObject({ kind: "invalid_song_id" });
+        await expect(provider.searchSongs(" ")).resolves.toEqual([]);
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(accounting.snapshot()).toEqual({
+            providerInvocations: 3, outboundAttempts: 0, cacheHits: 0,
+        });
+    });
+
+    it.each([
+        ["similar", { similartracks: { track: [{ name: "Track", artist: "Artist" }] } }],
+        ["search", { results: { trackmatches: { track: [{ name: "Track", artist: "Artist" }] } } }],
+    ])("caches validated %s results when enabled", async (method, payload) => {
+        const accounting = new LastFmRequestAccounting();
+        const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(payload), {
+            headers: { "Cache-Control": "max-age=60" },
+        }));
+        const provider = new LastFmMusicProvider("test-key", fetcher, 10_000, undefined, new LastFmResponseCache(), {
+            accounting, cacheEnabled: true,
+        });
+        const invoke = () => method === "similar"
+            ? provider.getSimilarSongs("lastfm:Artist:Track")
+            : provider.searchSongs("Track");
+        await invoke();
+        await invoke();
+        expect(accounting.snapshot()).toEqual({
+            providerInvocations: 2, outboundAttempts: 1, cacheHits: 1,
+        });
+    });
+
+    it("preserves graph provider-call budgets when cached responses avoid network attempts", async () => {
+        const accounting = new LastFmRequestAccounting();
+        const fetcher = vi.fn<typeof fetch>(async (input) => {
+            const method = new URL(String(input)).searchParams.get("method");
+            return new Response(JSON.stringify(method === "track.getInfo"
+                ? { track: { name: "Track", artist: "Artist" } }
+                : { similartracks: { track: [] } }), {
+                headers: { "Cache-Control": "max-age=60" },
+            });
+        });
+        const provider = new LastFmMusicProvider("test-key", fetcher, 10_000, undefined, new LastFmResponseCache(), {
+            accounting, cacheEnabled: true,
+        });
+        const first = await buildGraphWithDiagnostics(provider, "lastfm:Artist:Track", { maxRequests: 2 });
+        const second = await buildGraphWithDiagnostics(provider, "lastfm:Artist:Track", { maxRequests: 2 });
+        expect(first.diagnostics.upstreamRequestCount).toBe(2);
+        expect(second.diagnostics.upstreamRequestCount).toBe(2);
+        expect(accounting.snapshot()).toEqual({
+            providerInvocations: 4, outboundAttempts: 2, cacheHits: 2,
+        });
+    });
+
+    it.each([
+        ["track", { track: { name: "missing artist" } }],
+        ["track", { track: "invalid" }],
+        ["similar", { similartracks: { track: [{ name: "missing artist" }] } }],
+        ["similar", { similartracks: "invalid" }],
+        ["search", { results: { trackmatches: { track: [{ name: "missing artist" }] } } }],
+        ["search", { results: "invalid" }],
+        ["track", { error: 29 }],
+    ])("does not cache invalid %s responses", async (method, payload) => {
+        const cache = new LastFmResponseCache();
+        const set = vi.spyOn(cache, "set");
+        const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(payload), {
+            headers: { "Cache-Control": "max-age=60" },
+        }));
+        const provider = new LastFmMusicProvider("test-key", fetcher, 10_000, undefined, cache, {
+            cacheEnabled: true,
+        });
+        const invoke = () => method === "track"
+            ? provider.getSong("lastfm:Artist:Track")
+            : method === "similar"
+              ? provider.getSimilarSongs("lastfm:Artist:Track")
+              : provider.searchSongs("Track");
+        await Promise.allSettled([invoke(), invoke()]);
+        expect(fetcher).toHaveBeenCalledTimes(2);
+        expect(set).not.toHaveBeenCalled();
     });
 
     it("ignores generic Last.fm placeholder art", async () => {

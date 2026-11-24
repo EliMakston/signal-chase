@@ -46,13 +46,33 @@ function musicApp(options: {
 }
 
 describe("/api/music/search", () => {
+    it.each([undefined, "false", "TRUE", "true"])(
+        "only enables the response cache for the exact flag value %s",
+        async (flag) => {
+            const fetcher = vi.fn<typeof fetch>(async () => new Response(
+                JSON.stringify({ results: { trackmatches: { track: [] } } }),
+                { headers: { "Cache-Control": "max-age=60" } },
+            ));
+            vi.stubGlobal("fetch", fetcher);
+            const app = musicApp();
+            const query = `cache-policy-${flag ?? "unset"}`;
+            const env = { LASTFM_API_KEY: "configured", LASTFM_CACHE_ENABLED: flag } as Env;
+            const first = await app.request(`/api/music/search?query=${query}`, undefined, env);
+            const second = await app.request(`/api/music/search?query=${query}`, undefined, env);
+            expect(first.status).toBe(200);
+            expect(second.status).toBe(200);
+            expect(second.headers.get("Cache-Control")).toBe("no-store");
+            expect(fetcher).toHaveBeenCalledTimes(flag === "true" ? 1 : 2);
+        },
+    );
+
     it("disables public Last.fm search without an upstream request", async () => {
         const fetcher = vi.fn<typeof fetch>();
         vi.stubGlobal("fetch", fetcher);
         const response = await musicApp({ enabled: false }).request(
             "/api/music/search?query=track",
             undefined,
-            { LASTFM_API_KEY: "configured" } as Env,
+            { LASTFM_API_KEY: "configured", LASTFM_CACHE_ENABLED: "true" } as Env,
         );
 
         expect(response.status).toBe(503);
@@ -247,6 +267,20 @@ describe("/api/music/search", () => {
 });
 
 describe("/api/music/similar", () => {
+    it.each(["false", "true"])("uses the independent cache policy %s", async (flag) => {
+        const fetcher = vi.fn<typeof fetch>(async () => new Response(
+            JSON.stringify({ similartracks: { track: [] } }),
+            { headers: { "Cache-Control": "max-age=60" } },
+        ));
+        vi.stubGlobal("fetch", fetcher);
+        const app = musicApp();
+        const env = { LASTFM_API_KEY: "configured", LASTFM_CACHE_ENABLED: flag } as Env;
+        const url = `/api/music/similar?songId=${encodeURIComponent(`lastfm:SimilarCache:${flag}`)}`;
+        expect((await app.request(url, undefined, env)).status).toBe(200);
+        expect((await app.request(url, undefined, env)).status).toBe(200);
+        expect(fetcher).toHaveBeenCalledTimes(flag === "true" ? 1 : 2);
+    });
+
     it("rejects missing and malformed song IDs and missing credentials without upstream calls", async () => {
         const fetcher = vi.fn<typeof fetch>();
         vi.stubGlobal("fetch", fetcher);
@@ -381,6 +415,30 @@ describe("/api/music/graph", () => {
     function graphUrl(seedSongId: string): string {
         return `/api/music/graph?seedSongId=${encodeURIComponent(seedSongId)}`;
     }
+
+    it.each(["false", "true"])("uses the independent cache policy %s", async (flag) => {
+        const fetcher = vi.fn<typeof fetch>(async (input) => {
+            const url = new URL(String(input));
+            const payload = url.searchParams.get("method") === "track.getInfo"
+                ? { track: { name: url.searchParams.get("track"), artist: url.searchParams.get("artist") } }
+                : { similartracks: { track: [] } };
+            return new Response(JSON.stringify(payload), {
+                headers: { "Cache-Control": "max-age=60" },
+            });
+        });
+        vi.stubGlobal("fetch", fetcher);
+        const app = graphApp();
+        const env = { LASTFM_API_KEY: apiKey, LASTFM_CACHE_ENABLED: flag } as Env;
+        const url = graphUrl(`lastfm:GraphCache:${flag}`);
+        const first = await app.request(url, undefined, env);
+        const second = await app.request(url, undefined, env);
+        expect(first.status).toBe(200);
+        expect(second.status).toBe(200);
+        const firstGraph = await first.json();
+        const secondGraph = await second.json();
+        expect(secondGraph).toEqual(firstGraph);
+        expect(fetcher).toHaveBeenCalledTimes(flag === "true" ? 2 : 4);
+    });
 
     it("disables all public Last.fm endpoints before upstream access", async () => {
         const fetcher = vi.fn<typeof fetch>();
@@ -664,5 +722,27 @@ describe("/api/music/graph", () => {
         expect(firstResponse.status).toBe(200);
         expect(secondResponse.status).toBe(200);
         expect(fetcher).toHaveBeenCalledTimes(3);
+    });
+
+    it("does not coalesce simultaneous builds with different cache policies", async () => {
+        let releaseFetch: (() => void) | undefined;
+        const fetchGate = new Promise<void>((resolve) => {
+            releaseFetch = resolve;
+        });
+        const baseFetcher = graphFetch();
+        const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+            await fetchGate;
+            return baseFetcher(input, init);
+        });
+        vi.stubGlobal("fetch", fetcher);
+        const app = graphApp();
+        const url = graphUrl("lastfm:PolicyBand:UniqueSeed");
+        const first = app.request(url, undefined, { LASTFM_API_KEY: apiKey, LASTFM_CACHE_ENABLED: "true" } as Env);
+        const second = app.request(url, undefined, { LASTFM_API_KEY: apiKey } as Env);
+        await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+        releaseFetch?.();
+        const responses = await Promise.all([first, second]);
+        expect(responses.map((response) => response.status)).toEqual([200, 200]);
+        expect(fetcher).toHaveBeenCalledTimes(4);
     });
 });

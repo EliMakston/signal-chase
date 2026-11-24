@@ -17,6 +17,7 @@ export interface GraphBuildDiagnostics {
     expandedSongIds: string[];
     unexpandedSongIds: string[];
     expandedWithZeroUsableRecommendationsSongIds: string[];
+    /** Provider invocations, including cache hits; not the number of network attempts. */
     upstreamRequestCount: number;
     songsOmittedAtSongLimit: number;
     stopReasons: {

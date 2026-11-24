@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Song } from "../game/types";
 import type { MusicProvider } from "./musicProvider";
-import { buildGraph, GraphBuildError } from "./graphBuilder";
+import {
+    buildGraph,
+    buildGraphWithDiagnostics,
+    GraphBuildError,
+} from "./graphBuilder";
 
 function song(id: string): Song {
     return {
@@ -47,6 +51,97 @@ function providerFor(
 }
 
 describe("buildGraph", () => {
+    it("reports discovered, expanded, depth-limited, and empty expansions separately", async () => {
+        const provider = providerFor(["a", "b", "c", "d"], {
+            a: ["b", "c"],
+            b: ["d"],
+            c: [],
+        });
+
+        const { graph, diagnostics } = await buildGraphWithDiagnostics(
+            provider,
+            "a",
+            { maxDepth: 2 },
+        );
+
+        expect(graph.nodes.size).toBe(4);
+        expect(diagnostics.discoveredSongIds).toEqual(["a", "b", "c", "d"]);
+        expect(diagnostics.expandedSongIds).toEqual(["a", "b", "c"]);
+        expect(diagnostics.unexpandedSongIds).toEqual(["d"]);
+        expect(diagnostics.expandedWithZeroUsableRecommendationsSongIds).toEqual([
+            "c",
+        ]);
+        expect(diagnostics.upstreamRequestCount).toBe(4);
+        expect(diagnostics.stopReasons).toEqual({
+            depthLimitSongIds: ["d"],
+            requestLimitSongIds: [],
+            songLimitReached: false,
+            queueExhausted: true,
+        });
+        expect(diagnostics.durationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it("reports song-limit omissions without dropping edges to already discovered songs", async () => {
+        const provider = providerFor(["a", "b", "c"], {
+            a: ["b", "c"],
+            b: ["a", "c"],
+        });
+
+        const { graph, diagnostics } = await buildGraphWithDiagnostics(
+            provider,
+            "a",
+            { maxDepth: 2, maxSongs: 2 },
+        );
+
+        expect(graph.edges.get("a")).toEqual(["b"]);
+        expect(graph.edges.get("b")).toEqual(["a"]);
+        expect(diagnostics.songsOmittedAtSongLimit).toBe(2);
+        expect(diagnostics.stopReasons.songLimitReached).toBe(true);
+    });
+
+    it("reports request-limited songs as unexpanded rather than empty expansions", async () => {
+        const provider = providerFor(["a", "b", "c", "d"], {
+            a: ["b", "c"],
+            b: ["d"],
+            c: [],
+        });
+
+        const { diagnostics } = await buildGraphWithDiagnostics(
+            provider,
+            "a",
+            { maxDepth: 3, maxRequests: 2 },
+        );
+
+        expect(diagnostics.upstreamRequestCount).toBe(2);
+        expect(diagnostics.expandedSongIds).toEqual(["a"]);
+        expect(diagnostics.unexpandedSongIds).toEqual(["b", "c"]);
+        expect(diagnostics.expandedWithZeroUsableRecommendationsSongIds).toEqual(
+            [],
+        );
+        expect(diagnostics.stopReasons).toEqual({
+            depthLimitSongIds: [],
+            requestLimitSongIds: ["b", "c"],
+            songLimitReached: false,
+            queueExhausted: false,
+        });
+    });
+
+    it("reports queue exhaustion when all expanded songs have no recommendations", async () => {
+        const provider = providerFor(["a"], { a: [] });
+        const { diagnostics } = await buildGraphWithDiagnostics(provider, "a");
+
+        expect(diagnostics.expandedSongIds).toEqual(["a"]);
+        expect(
+            diagnostics.expandedWithZeroUsableRecommendationsSongIds,
+        ).toEqual(["a"]);
+        expect(diagnostics.stopReasons).toEqual({
+            depthLimitSongIds: [],
+            requestLimitSongIds: [],
+            songLimitReached: false,
+            queueExhausted: true,
+        });
+    });
+
     it("builds a directed graph with breadth-first expansion", async () => {
         const provider = providerFor(["a", "b", "c", "d"], {
             a: ["b", "c"],

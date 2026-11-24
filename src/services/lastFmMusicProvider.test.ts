@@ -16,7 +16,7 @@ function mockFetch(payload: unknown, status = 200) {
 }
 
 describe("LastFmMusicProvider", () => {
-    it("normalizes track information and decodes stable artist/title IDs", async () => {
+    it("normalizes track information without exposing artwork excluded by Last.fm terms", async () => {
         const fetcher = mockFetch({
             track: {
                 name: "Signal: Noise",
@@ -35,7 +35,7 @@ describe("LastFmMusicProvider", () => {
             id: "lastfm:A%20%26%20B:Signal%3A%20Noise",
             title: "Signal: Noise",
             artist: "A & B",
-            albumArt: "large.jpg",
+            albumArt: "",
         });
 
         const [requestUrl] = fetcher.mock.calls[0];
@@ -45,6 +45,29 @@ describe("LastFmMusicProvider", () => {
         expect(url.searchParams.get("track")).toBe("Signal: Noise");
         expect(url.searchParams.get("api_key")).toBe("test-key");
         expect(url.searchParams.get("format")).toBe("json");
+    });
+
+    it("ignores generic Last.fm placeholder art", async () => {
+        const provider = new LastFmMusicProvider(
+            "test-key",
+            mockFetch({
+                track: {
+                    name: "Track",
+                    artist: "Artist",
+                    image: [
+                        {
+                            size: "extralarge",
+                            "#text":
+                                "https://lastfm.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png",
+                        },
+                    ],
+                },
+            }),
+        );
+
+        await expect(provider.getSong("lastfm:Artist:Track")).resolves.toMatchObject({
+            albumArt: "",
+        });
     });
 
     it("returns null when track information is empty", async () => {
@@ -187,6 +210,12 @@ describe("LastFmMusicProvider", () => {
         await expect(provider.getSimilarSongs("lastfm::Track")).rejects.toMatchObject({
             kind: "invalid_song_id",
         });
+        await expect(
+            provider.getSimilarSongs(`lastfm:Artist:${"a".repeat(513)}`),
+        ).rejects.toMatchObject({ kind: "invalid_song_id" });
+        await expect(
+            provider.getSimilarSongs("lastfm:Artist:Track%0AInjected"),
+        ).rejects.toMatchObject({ kind: "invalid_song_id" });
         expect(fetcher).not.toHaveBeenCalled();
     });
 
@@ -282,11 +311,55 @@ describe("LastFmMusicProvider", () => {
         await expect(
             provider.getSimilarSongs("lastfm:Artist:Track"),
         ).rejects.toMatchObject({
-            kind: "http",
+            kind: "rate_limited",
             details: {
                 upstreamStatus: 429,
                 lastFmErrorCode: 29,
                 lastFmErrorMessage: "Rate limit exceeded",
+                retryAfterSeconds: 60,
+            },
+        });
+    });
+
+    it("preserves a bounded upstream Retry-After value", async () => {
+        const provider = new LastFmMusicProvider(
+            "test-key",
+            vi.fn<typeof fetch>().mockResolvedValue(
+                new Response(JSON.stringify({}), {
+                    status: 429,
+                    headers: { "Retry-After": "45" },
+                }),
+            ),
+        );
+
+        await expect(
+            provider.getSimilarSongs("lastfm:Artist:Track"),
+        ).rejects.toMatchObject({
+            kind: "rate_limited",
+            details: { retryAfterSeconds: 45 },
+        });
+    });
+
+    it("times out an upstream request and identifies the failure safely", async () => {
+        const fetcher = vi.fn<typeof fetch>(
+            (_input, init) =>
+                new Promise<Response>((_resolve, reject) => {
+                    init?.signal?.addEventListener(
+                        "abort",
+                        () => reject(init.signal?.reason),
+                        { once: true },
+                    );
+                }),
+        );
+        const provider = new LastFmMusicProvider("test-key", fetcher, 5);
+
+        await expect(
+            provider.getSong("lastfm:Artist:Track"),
+        ).rejects.toMatchObject({
+            kind: "timeout",
+            details: {
+                stage: "fetch",
+                upstreamErrorType: "TimeoutError",
             },
         });
     });

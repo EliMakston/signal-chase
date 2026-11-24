@@ -23,26 +23,32 @@ export function RecommendationList({
 
     if (recommendations.length === 0) {
         return (
-            <p className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+            <p className="radio-inset-display px-4 py-6 text-center text-sm text-muted-foreground">
                 No legal recommendations from this song.
             </p>
         );
     }
 
     return (
-        <ul className="grid gap-3 sm:grid-cols-2" aria-label="Legal song recommendations">
-            {recommendations.map(({ songId, song }) => (
+        <ul className="grid min-w-0 gap-2" aria-label="Legal song recommendations">
+            {recommendations.map(({ songId, song }, index) => (
                 <li key={songId}>
                     <button
                         type="button"
                         onClick={() => onSelect(songId)}
                         disabled={disabled}
                         aria-label={`Move to ${song.title} by ${song.artist}`}
-                        className="group flex min-h-20 w-full items-center justify-between gap-3 rounded-xl border border-border bg-background/70 p-3 text-left transition-colors hover:border-primary/60 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
+                        className="radio-mechanical-button radio-recommendation-row group flex min-h-16 min-w-0 w-full items-center gap-2 p-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 sm:gap-3 sm:p-3"
                     >
-                        <SongCard song={song} />
+                        <span className="radio-recommendation-index" aria-hidden="true">
+                            {String(index + 1).padStart(2, "0")}
+                        </span>
+                        <SongCard
+                            song={song}
+                            className="min-w-0 flex-1 [&>div:first-child]:h-11 [&>div:first-child]:w-11 [&_p:first-child]:text-sm [&_p:last-child]:text-xs"
+                        />
                         <ArrowRight
-                            className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-1 group-hover:text-foreground"
+                            className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-1 group-hover:text-foreground motion-reduce:transition-none"
                             aria-hidden="true"
                         />
                     </button>

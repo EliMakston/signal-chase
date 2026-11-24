@@ -44,3 +44,62 @@
   --color-shell: #fafafa;
   --color-shell-panel: #ffffff;
 }
+
+[data-theme="radio-terminal"] {
+  color-scheme: dark;
+  --color-background: #222b26;
+  --color-foreground: #e9dfc5;
+  --color-card: #29332d;
+  --color-card-foreground: #e9dfc5;
+  --color-popover: #181b19;
+  --color-popover-foreground: #e9dfc5;
+  --color-primary: #a5c7ac;
+  --color-primary-foreground: #181b19;
+  --color-secondary: #34453b;
+  --color-secondary-foreground: #e9dfc5;
+  --color-muted: #2b342e;
+  --color-muted-foreground: #c7cebf;
+  --color-accent: #527665;
+  --color-accent-foreground: #ffffff;
+  --color-destructive: #8a503a;
+  --color-destructive-foreground: #ffffff;
+  --color-border: #627568;
+  --color-input: #718578;
+  --color-ring: #e9a14b;
+  --color-success: #a5c7ac;
+  --color-success-foreground: #181b19;
+  --color-warning: #e9a14b;
+  --color-warning-foreground: #181b19;
+  --color-info: #d5ba83;
+  --color-info-foreground: #181b19;
+  --color-shell: #181b19;
+  --color-shell-panel: #29332d;
+  --radius: 0.45rem;
+
+  --radio-terminal: #222b26;
+  --radio-charcoal: #181b19;
+  --radio-sage: #527665;
+  --radio-cream: #e9dfc5;
+  --radio-brass: #d5ba83;
+  --radio-amber: #e9a14b;
+  --radio-rust: #8a503a;
+  --radio-display: #a5c7ac;
+  --radio-raised: #29332d;
+  --radio-inset: #141815;
+  --radio-border: #627568;
+  --radio-muted-text: #c7cebf;
+  --radio-font-display: "Courier New", "Liberation Mono", monospace;
+  --radio-font-technical: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --radio-space-1: 0.25rem;
+  --radio-space-2: 0.5rem;
+  --radio-space-3: 0.75rem;
+  --radio-space-4: 1rem;
+  --radio-space-5: 1.5rem;
+  --radio-space-6: 2rem;
+  --radio-focus-width: 3px;
+  --radio-focus-color: #e9a14b;
+  --radio-button-face: #34453b;
+  --radio-button-hover: #42584a;
+  --radio-button-active: #222b26;
+  --radio-button-border: #819282;
+}

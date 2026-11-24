@@ -6,7 +6,7 @@
  * identity is re-asserted only from worker bindings.
  */
 
-import type { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
 import {
   apiWorkerFetch,
@@ -32,11 +32,12 @@ import type { ExpoAuthBridgeOptions, JwtVerifierConfig, VerifyResult } from 'dee
 import { integrations } from '../integrations.js'
 import type { AppContext, Env } from '../../worker.js'
 import {
+  canonicalizeLastFmSongId,
   isValidLastFmSongId,
   LastFmMusicProvider,
   LastFmProviderError,
 } from '../services/lastFmMusicProvider.js'
-import { GraphBuildError, buildGraph } from '../services/graphBuilder.js'
+import { GraphBuildError, buildGraphWithDiagnostics } from '../services/graphBuilder.js'
 import { serializeGraph, type SerializedSongGraph } from '../game/graphSerialization.js'
 
 function jwtConfig(env: Env): JwtVerifierConfig {
@@ -71,52 +72,43 @@ function reassertAppIdentity(headers: Headers, env: Env): void {
   headers.set('x-app-id', env.DEEPSPACE_APP_ID)
 }
 
-const GRAPH_CACHE_TTL_MS = 15 * 60 * 1000
-const GRAPH_CACHE_MAX_ENTRIES = 20
-const graphCache = new Map<string, { expiresAt: number; graph: SerializedSongGraph }>()
 const graphBuildsInFlight = new Map<string, Promise<SerializedSongGraph>>()
+const MAX_ACTIVE_GRAPH_BUILDS = 4
+const GRAPH_BUILD_TIMEOUT_MS = 30_000
 
-function getCachedGraph(seedSongId: string): SerializedSongGraph | null {
-  const cached = graphCache.get(seedSongId)
-  if (!cached) return null
-  if (cached.expiresAt <= Date.now()) {
-    graphCache.delete(seedSongId)
-    return null
+class GraphBuildCapacityError extends Error {
+  constructor() {
+    super('The active graph-build limit has been reached.')
+    this.name = 'GraphBuildCapacityError'
   }
-
-  graphCache.delete(seedSongId)
-  graphCache.set(seedSongId, cached)
-  return cached.graph
 }
 
 async function getOrBuildGraph(
   seedSongId: string,
   apiKey: string,
 ): Promise<SerializedSongGraph> {
-  const cached = getCachedGraph(seedSongId)
-  if (cached) return cached
-
   const activeBuild = graphBuildsInFlight.get(seedSongId)
   if (activeBuild) return activeBuild
+  if (graphBuildsInFlight.size >= MAX_ACTIVE_GRAPH_BUILDS) {
+    throw new GraphBuildCapacityError()
+  }
 
-  const provider = new LastFmMusicProvider(apiKey)
-  const build = buildGraph(provider, seedSongId, {
-    maxDepth: 2,
-    maxSongs: 30,
-    maxRecommendations: 5,
-    maxRequests: 15,
-  }).then((graph) => {
-    const serialized = serializeGraph(graph)
-    graphCache.set(seedSongId, {
-      expiresAt: Date.now() + GRAPH_CACHE_TTL_MS,
-      graph: serialized,
-    })
-    while (graphCache.size > GRAPH_CACHE_MAX_ENTRIES) {
-      const oldestSeedId = graphCache.keys().next().value
-      if (oldestSeedId === undefined) break
-      graphCache.delete(oldestSeedId)
+  const provider = new LastFmMusicProvider(
+    apiKey,
+    fetch,
+    10_000,
+    AbortSignal.timeout(GRAPH_BUILD_TIMEOUT_MS),
+  )
+  const build = buildGraphWithDiagnostics(provider, seedSongId, {
+    maxDepth: 3,
+    maxSongs: 50,
+    maxRecommendations: 6,
+    maxRequests: 30,
+  }).then(({ graph, diagnostics }) => {
+    return {
+      ...serializeGraph(graph),
+      expandedSongIds: diagnostics.expandedSongIds,
     }
-    return serialized
   })
 
   graphBuildsInFlight.set(seedSongId, build)
@@ -129,8 +121,121 @@ async function getOrBuildGraph(
   }
 }
 
+const MUSIC_RATE_LIMIT_RETRY_AFTER_SECONDS = 60
+const MUSIC_GRAPH_RATE_LIMIT_COST = 30
+
+type MusicLimitResult = 'allowed' | 'limited' | 'unavailable'
+type MusicContext = Context<AppContext>
+
+async function checkMusicRateLimit(
+  env: Env,
+  request: Request,
+  delta: number,
+  endpoint: string,
+): Promise<MusicLimitResult> {
+  if (!env.MUSIC_API_LIMITER) {
+    console.error('[music] Rate limiter binding unavailable', { endpoint })
+    return 'unavailable'
+  }
+
+  const clientIp = request.headers.get('CF-Connecting-IP')?.trim()
+  try {
+    const result = await env.MUSIC_API_LIMITER.limit({
+      key: clientIp || 'local-development',
+      delta,
+    })
+    if (!result.success) {
+      console.warn('[music] Rate limit exceeded', { endpoint })
+      return 'limited'
+    }
+    return 'allowed'
+  } catch (error) {
+    console.error('[music] Rate limiter check failed', {
+      endpoint,
+      errorType: error instanceof Error ? error.name : typeof error,
+    })
+    return 'unavailable'
+  }
+}
+
+function isLiveMusicEnabled(env: Env): boolean {
+  return env.LASTFM_ENABLED === 'true'
+}
+
+function musicDisabledResponse(c: MusicContext) {
+  return c.json(
+    {
+      code: 'live_music_disabled',
+      error: 'Live Last.fm functionality is disabled. Demo mode is available.',
+    },
+    503,
+  )
+}
+
+function rateLimitResponse(
+  c: MusicContext,
+  outcome: Exclude<MusicLimitResult, 'allowed'>,
+) {
+  if (outcome === 'limited') {
+    c.header('Retry-After', String(MUSIC_RATE_LIMIT_RETRY_AFTER_SECONDS))
+    return c.json(
+      {
+        code: 'rate_limited',
+        error: 'Live music requests are temporarily rate-limited.',
+      },
+      429,
+    )
+  }
+  return c.json(
+    {
+      code: 'music_protection_unavailable',
+      error: 'Live music functionality is temporarily unavailable.',
+    },
+    503,
+  )
+}
+
+function upstreamFailureResponse(
+  c: MusicContext,
+  error: unknown,
+  fallback: string,
+) {
+  if (error instanceof LastFmProviderError && error.kind === 'rate_limited') {
+    const retryAfter = error.details.retryAfterSeconds ?? MUSIC_RATE_LIMIT_RETRY_AFTER_SECONDS
+    c.header('Retry-After', String(retryAfter))
+    return c.json(
+      {
+        code: 'rate_limited',
+        error: 'Live music requests are temporarily rate-limited.',
+      },
+      429,
+    )
+  }
+  if (error instanceof LastFmProviderError && error.kind === 'timeout') {
+    return c.json(
+      {
+        code: 'upstream_timeout',
+        error: 'The music provider timed out. Please retry.',
+      },
+      504,
+    )
+  }
+  return c.json({ code: 'upstream_error', error: fallback }, 502)
+}
+
 /** Register auth, debug, and integration routes in their required order. */
 export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
+  app.use('/api/music/*', async (c, next) => {
+    const endpoint = new URL(c.req.url).pathname.split('/').pop() ?? 'unknown'
+    const startedAt = Date.now()
+    await next()
+    console.info('[music] API request', {
+      endpoint,
+      status: c.res.status,
+      durationMs: Date.now() - startedAt,
+    })
+  })
+
   const nativeAuthOptions = (env: Env): ExpoAuthBridgeOptions => ({
     allowedRedirectUris: (env.NATIVE_AUTH_REDIRECT_URIS ?? '')
       .split(',')
@@ -138,11 +243,66 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
       .filter(Boolean),
   })
 
-  app.get('/api/music/similar', async (c) => {
-    const apiKeyConfigured = Boolean(c.env.LASTFM_API_KEY?.trim())
+  app.get('/api/music/search', async (c) => {
+    const query = c.req.query('query')?.trim()
+    if (!query || query.length > 120 || /[\u0000-\u001f\u007f]/.test(query)) {
+      return c.json({ error: 'Query must be between 1 and 120 characters' }, 400)
+    }
 
+    if (!isLiveMusicEnabled(c.env)) return musicDisabledResponse(c)
+    const apiKey = c.env.LASTFM_API_KEY
+    if (!apiKey?.trim()) {
+      return c.json({ code: 'music_provider_unconfigured', error: 'Music provider is not configured' }, 503)
+    }
+    const limit = await checkMusicRateLimit(c.env, c.req.raw, 1, 'search')
+    if (limit !== 'allowed') {
+      return rateLimitResponse(c, limit)
+    }
+
+    try {
+      const provider = new LastFmMusicProvider(apiKey)
+      const songs = await provider.searchSongs(query)
+      return c.json({ songs: songs.slice(0, 10) })
+    } catch (error) {
+      const diagnostic =
+        error instanceof LastFmProviderError
+          ? {
+              errorType: error.name,
+              errorKind: error.kind,
+              stage: error.details.stage ?? 'unknown',
+              upstreamStatus: error.details.upstreamStatus,
+              lastFmErrorCode: error.details.lastFmErrorCode,
+              upstreamErrorType: error.details.upstreamErrorType,
+            }
+          : {
+              errorType: error instanceof Error ? error.name : typeof error,
+              errorKind: 'unexpected',
+              stage: 'route',
+            }
+      console.error('[music] Track search failed', diagnostic)
+
+      if (error instanceof LastFmProviderError && error.kind === 'configuration') {
+        return c.json({ error: 'Music provider is not configured' }, 503)
+      }
+      return upstreamFailureResponse(c, error, 'Failed to search songs')
+    }
+  })
+
+  app.get('/api/music/similar', async (c) => {
     const songId = c.req.query('songId')
     if (!songId) return c.json({ error: 'Missing songId' }, 400)
+
+    if (!isValidLastFmSongId(songId)) {
+      return c.json({ error: 'Invalid songId' }, 400)
+    }
+    if (!isLiveMusicEnabled(c.env)) return musicDisabledResponse(c)
+    if (!c.env.LASTFM_API_KEY?.trim()) {
+      return c.json({ code: 'music_provider_unconfigured', error: 'Music provider is not configured' }, 503)
+    }
+    const limit = await checkMusicRateLimit(c.env, c.req.raw, 1, 'similar')
+    if (limit !== 'allowed') {
+      return rateLimitResponse(c, limit)
+    }
 
     try {
       const provider = new LastFmMusicProvider(c.env.LASTFM_API_KEY)
@@ -155,17 +315,14 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
               errorType: error.name,
               errorKind: error.kind,
               stage: error.details.stage ?? 'unknown',
-              apiKeyConfigured,
               upstreamStatus: error.details.upstreamStatus,
               lastFmErrorCode: error.details.lastFmErrorCode,
-              lastFmErrorMessage: error.details.lastFmErrorMessage,
               upstreamErrorType: error.details.upstreamErrorType,
             }
           : {
               errorType: error instanceof Error ? error.name : typeof error,
               errorKind: 'unexpected',
               stage: 'route',
-              apiKeyConfigured,
             }
       console.error('[music] Similar-track lookup failed', diagnostic)
 
@@ -178,7 +335,7 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
         }
       }
 
-      return c.json({ error: 'Failed to fetch similar songs' }, 502)
+      return upstreamFailureResponse(c, error, 'Failed to fetch similar songs')
     }
   })
 
@@ -187,27 +344,52 @@ export function registerAuthAndIntegrationRoutes(app: Hono<AppContext>): void {
     if (!seedSongId || !isValidLastFmSongId(seedSongId)) {
       return c.json({ error: 'Invalid seedSongId' }, 400)
     }
+    const canonicalSeedSongId = canonicalizeLastFmSongId(seedSongId)
 
+    if (!isLiveMusicEnabled(c.env)) return musicDisabledResponse(c)
     const apiKey = c.env.LASTFM_API_KEY
     if (!apiKey?.trim()) {
-      return c.json({ error: 'Music provider is not configured' }, 503)
+      return c.json({ code: 'music_provider_unconfigured', error: 'Music provider is not configured' }, 503)
+    }
+    const limit = await checkMusicRateLimit(
+      c.env,
+      c.req.raw,
+      MUSIC_GRAPH_RATE_LIMIT_COST,
+      'graph',
+    )
+    if (limit !== 'allowed') {
+      return rateLimitResponse(c, limit)
     }
 
     try {
-      return c.json(await getOrBuildGraph(seedSongId, apiKey))
+      return c.json(await getOrBuildGraph(canonicalSeedSongId, apiKey))
     } catch (error) {
       if (error instanceof GraphBuildError && error.kind === 'seed_not_found') {
         return c.json({ error: 'Seed song not found' }, 400)
       }
 
+      const providerError =
+        error instanceof GraphBuildError && error.cause instanceof LastFmProviderError
+          ? error.cause
+          : error
+      if (error instanceof GraphBuildCapacityError) {
+        c.header('Retry-After', '30')
+        return c.json(
+          {
+            code: 'music_capacity',
+            error: 'The music service is busy. Please retry shortly.',
+          },
+          503,
+        )
+      }
       const errorKind =
-        error instanceof GraphBuildError
-          ? error.kind
-          : error instanceof LastFmProviderError
+        providerError instanceof LastFmProviderError
+          ? providerError.kind
+          : error instanceof GraphBuildError
             ? error.kind
             : 'unexpected'
       console.error('[music] Graph build failed', { errorKind })
-      return c.json({ error: 'Failed to build song graph' }, 502)
+      return upstreamFailureResponse(c, providerError, 'Failed to build song graph')
     }
   })
 

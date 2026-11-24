@@ -57,6 +57,119 @@ describe("generateRace", () => {
         });
     });
 
+    it("applies Easy, Medium, and Hard preset move ranges", () => {
+        const longerGraph = createGraph([
+            ["a", ["b"]],
+            ["b", ["c"]],
+            ["c", ["d"]],
+            ["d", ["e"]],
+            ["e", ["f"]],
+            ["f", []],
+        ]);
+
+        for (const [difficulty, minMoves, maxMoves] of [
+            ["easy", 2, 3],
+            ["medium", 3, 4],
+            ["hard", 4, 5],
+        ] as const) {
+            const race = generateRace(longerGraph, {
+                difficulty,
+                random: () => 0,
+            });
+            expect(race?.optimalMoves).toBeGreaterThanOrEqual(minMoves);
+            expect(race?.optimalMoves).toBeLessThanOrEqual(maxMoves);
+        }
+    });
+
+    it("prefers pairs with at least two simple routes within seven moves", () => {
+        const graphWithBothKinds = createGraph([
+            ["a", ["b", "c"]],
+            ["b", ["d"]],
+            ["c", ["d"]],
+            ["d", []],
+            ["x", ["y"]],
+            ["y", ["z"]],
+            ["z", []],
+        ]);
+
+        expect(
+            generateRace(graphWithBothKinds, {
+                minMoves: 2,
+                maxMoves: 2,
+                random: () => 0.999,
+            }),
+        ).toEqual({
+            startSongId: "a",
+            targetSongId: "d",
+            optimalMoves: 2,
+        });
+    });
+
+    it("falls back to reachable pairs when no candidate has alternative routes", () => {
+        const oneRouteGraph = createGraph([
+            ["a", ["b"]],
+            ["b", ["c"]],
+            ["c", []],
+        ]);
+
+        expect(
+            generateRace(oneRouteGraph, {
+                minMoves: 2,
+                maxMoves: 2,
+                random: () => 0,
+            }),
+        ).toEqual({
+            startSongId: "a",
+            targetSongId: "c",
+            optimalMoves: 2,
+        });
+    });
+
+    it("supports explicit constraints alongside a difficulty preset", () => {
+        const race = generateRace(graph, {
+            difficulty: "easy",
+            minMoves: 1,
+            maxMoves: 1,
+        });
+
+        expect(race).toEqual({
+            startSongId: "a",
+            targetSongId: "c",
+            optimalMoves: 1,
+        });
+    });
+
+    it("excludes the current pair when selecting a new race", () => {
+        const firstRace = {
+            startSongId: "a",
+            targetSongId: "d",
+            optimalMoves: 2,
+        };
+        const nextRace = generateRace(
+            createGraph([
+                ["a", ["b", "c"]],
+                ["b", ["d"]],
+                ["c", ["d"]],
+                ["d", []],
+                ["x", ["y"]],
+                ["y", ["z"]],
+                ["z", []],
+            ]),
+            {
+                minMoves: 2,
+                maxMoves: 2,
+                excludeRace: firstRace,
+                random: () => 0,
+            },
+        );
+
+        expect(nextRace).toEqual({
+            startSongId: "x",
+            targetSongId: "z",
+            optimalMoves: 2,
+        });
+    });
+
     it("respects directional edges when selecting a reachable target", () => {
         const oneWayGraph = createGraph([
             ["start", ["middle"]],
@@ -101,7 +214,7 @@ describe("generateRace", () => {
         ).toBeNull();
     });
 
-    it("selects candidates deterministically using the injected random function", () => {
+    it("selects qualifying candidates deterministically using the injected random function", () => {
         const firstRace = generateRace(graph, { random: () => 0 });
         const lastRace = generateRace(graph, { random: () => 0.999999 });
 
@@ -111,9 +224,9 @@ describe("generateRace", () => {
             optimalMoves: 2,
         });
         expect(lastRace).toEqual({
-            startSongId: "c",
+            startSongId: "a",
             targetSongId: "e",
-            optimalMoves: 2,
+            optimalMoves: 3,
         });
     });
 

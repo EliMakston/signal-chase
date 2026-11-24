@@ -6,6 +6,7 @@ export interface SerializedSongGraph {
         songId: string;
         recommendations: string[];
     }>;
+    expandedSongIds?: string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

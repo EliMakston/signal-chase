@@ -115,6 +115,10 @@ export interface Env extends DOBindings<typeof __DO_MANIFEST__> {
   APP_OWNER_JWT: string
   /** Server-side Last.fm API key; never exposed to client bundles. */
   LASTFM_API_KEY?: string
+  /** Explicit opt-in; absent or any value other than "true" disables Last.fm. */
+  LASTFM_ENABLED?: string
+  /** Cloudflare's distributed, approximate per-location request limiter. */
+  MUSIC_API_LIMITER?: RateLimit
   /**
    * Enables /api/debug/* only when exactly "true". The route still requires
    * an authenticated app owner/admin. deepspace dev/test set it locally.

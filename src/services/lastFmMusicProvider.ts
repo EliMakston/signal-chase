@@ -8,6 +8,8 @@ type LastFmErrorKind =
     | "configuration"
     | "http"
     | "api"
+    | "rate_limited"
+    | "timeout"
     | "malformed"
     | "network"
     | "invalid_song_id";
@@ -27,7 +29,11 @@ interface LastFmErrorDetails {
     lastFmErrorCode?: number | string;
     lastFmErrorMessage?: string;
     upstreamErrorType?: string;
+    retryAfterSeconds?: number;
 }
+
+const LASTFM_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_RETRY_AFTER_SECONDS = 60;
 
 export class LastFmProviderError extends Error {
     constructor(
@@ -63,7 +69,10 @@ function encodeSongId(artist: string, title: string): string {
 }
 
 function decodeSongId(songId: string): { artist: string; title: string } {
-    if (!songId.startsWith(SONG_ID_PREFIX)) {
+    if (
+        songId.length > 512 ||
+        !songId.startsWith(SONG_ID_PREFIX)
+    ) {
         throw new LastFmProviderError("invalid_song_id", "Invalid Last.fm song ID.", {
             stage: "input_validation",
         });
@@ -80,7 +89,14 @@ function decodeSongId(songId: string): { artist: string; title: string } {
     try {
         const artist = decodeURIComponent(encodedSong.slice(0, separatorIndex));
         const title = decodeURIComponent(encodedSong.slice(separatorIndex + 1));
-        if (!artist.trim() || !title.trim()) {
+        if (
+            !artist.trim() ||
+            !title.trim() ||
+            artist.length > 160 ||
+            title.length > 160 ||
+            /[\u0000-\u001f\u007f]/.test(artist) ||
+            /[\u0000-\u001f\u007f]/.test(title)
+        ) {
             throw new Error("Missing artist or title");
         }
         return { artist, title };
@@ -100,19 +116,9 @@ export function isValidLastFmSongId(songId: string): boolean {
     }
 }
 
-function albumArt(track: LastFmRecord): string {
-    if (!Array.isArray(track.image)) {
-        return "";
-    }
-
-    const images = track.image.filter(isRecord);
-    const preferred =
-        images.find((image) => image.size === "extralarge") ??
-        images.find((image) => image.size === "large") ??
-        images.find((image) => image.size === "medium") ??
-        images[images.length - 1];
-    const url = preferred?.["#text"];
-    return typeof url === "string" ? url : "";
+export function canonicalizeLastFmSongId(songId: string): string {
+    const { artist, title } = decodeSongId(songId);
+    return encodeSongId(artist, title);
 }
 
 function normalizeTrack(track: unknown): Song | null {
@@ -130,7 +136,7 @@ function normalizeTrack(track: unknown): Song | null {
         id: encodeSongId(artist, title),
         title,
         artist,
-        albumArt: albumArt(track),
+        albumArt: "",
     };
 }
 
@@ -156,30 +162,40 @@ function errorDetails(
     apiKey: string | undefined,
     stage: LastFmErrorStage,
     upstreamStatus?: number,
+    retryAfterHeader?: string | null,
 ): LastFmErrorDetails {
     const details: LastFmErrorDetails = { stage };
     if (upstreamStatus !== undefined) {
         details.upstreamStatus = upstreamStatus;
     }
 
-    if (!isRecord(payload)) {
-        return details;
-    }
-
-    const errorCode = payload.error;
-    if (typeof errorCode === "number" || typeof errorCode === "string") {
-        details.lastFmErrorCode = errorCode;
-    }
-
-    if (typeof payload.message === "string") {
-        const secrets = apiKey
-            ? [apiKey, encodeURIComponent(apiKey)]
-            : [];
-        let safeMessage = payload.message.replace(/https?:\/\/\S+/gi, "[redacted-url]");
-        for (const secret of secrets) {
-            safeMessage = safeMessage.replaceAll(secret, "[redacted]");
+    if (isRecord(payload)) {
+        const errorCode = payload.error;
+        if (typeof errorCode === "number" || typeof errorCode === "string") {
+            details.lastFmErrorCode = errorCode;
         }
-        details.lastFmErrorMessage = safeMessage.slice(0, 500);
+
+        if (typeof payload.message === "string") {
+            const secrets = apiKey
+                ? [apiKey, encodeURIComponent(apiKey)]
+                : [];
+            let safeMessage = payload.message.replace(/https?:\/\/\S+/gi, "[redacted-url]");
+            for (const secret of secrets) {
+                safeMessage = safeMessage.replaceAll(secret, "[redacted]");
+            }
+            details.lastFmErrorMessage = safeMessage.slice(0, 500);
+        }
+    }
+    if (
+        upstreamStatus === 429 ||
+        details.lastFmErrorCode === 29 ||
+        details.lastFmErrorCode === "29"
+    ) {
+        const retryAfter = Number(retryAfterHeader);
+        details.retryAfterSeconds =
+            Number.isInteger(retryAfter) && retryAfter > 0 && retryAfter <= 3600
+                ? retryAfter
+                : DEFAULT_RETRY_AFTER_SECONDS;
     }
 
     return details;
@@ -189,6 +205,8 @@ export class LastFmMusicProvider implements MusicProvider {
     constructor(
         private readonly apiKey: string | undefined,
         private readonly fetcher: typeof fetch = fetch,
+        private readonly timeoutMs = LASTFM_REQUEST_TIMEOUT_MS,
+        private readonly overallSignal?: AbortSignal,
     ) {}
 
     async getSong(songId: string): Promise<Song | null> {
@@ -272,12 +290,30 @@ export class LastFmMusicProvider implements MusicProvider {
         });
 
         let response: Response;
+        const requestTimeout = AbortSignal.timeout(this.timeoutMs);
+        const signal = this.overallSignal
+            ? AbortSignal.any([this.overallSignal, requestTimeout])
+            : requestTimeout;
         try {
             response = await this.fetcher.call(
                 globalThis,
                 `${LASTFM_API_URL}?${searchParams}`,
+                { signal },
             );
         } catch (error) {
+            if (
+                signal.aborted ||
+                (error instanceof DOMException && error.name === "TimeoutError")
+            ) {
+                throw new LastFmProviderError(
+                    "timeout",
+                    "Last.fm request timed out.",
+                    {
+                        stage: "fetch",
+                        upstreamErrorType: "TimeoutError",
+                    },
+                );
+            }
             throw new LastFmProviderError(
                 "network",
                 "Last.fm request failed.",
@@ -293,11 +329,28 @@ export class LastFmMusicProvider implements MusicProvider {
         try {
             payload = await response.json();
         } catch {
-            if (!response.ok) {
+            if (signal.aborted) {
                 throw new LastFmProviderError(
-                    "http",
+                    "timeout",
+                    "Last.fm request timed out.",
+                    {
+                        stage: "response_json",
+                        upstreamErrorType: "TimeoutError",
+                    },
+                );
+            }
+            if (!response.ok) {
+                const kind = response.status === 429 ? "rate_limited" : "http";
+                throw new LastFmProviderError(
+                    kind,
                     `Last.fm request failed with status ${response.status}.`,
-                    { stage: "response_json", upstreamStatus: response.status },
+                    errorDetails(
+                        null,
+                        this.apiKey,
+                        "response_json",
+                        response.status,
+                        response.headers.get("Retry-After"),
+                    ),
                 );
             }
             throw new LastFmProviderError(
@@ -307,10 +360,17 @@ export class LastFmMusicProvider implements MusicProvider {
             );
         }
         if (!response.ok) {
+            const kind = response.status === 429 ? "rate_limited" : "http";
             throw new LastFmProviderError(
-                "http",
+                kind,
                 `Last.fm request failed with status ${response.status}.`,
-                errorDetails(payload, this.apiKey, "upstream_http", response.status),
+                errorDetails(
+                    payload,
+                    this.apiKey,
+                    "upstream_http",
+                    response.status,
+                    response.headers.get("Retry-After"),
+                ),
             );
         }
         if (!isRecord(payload)) {
@@ -321,8 +381,9 @@ export class LastFmMusicProvider implements MusicProvider {
             );
         }
         if ("error" in payload) {
+            const rateLimited = payload.error === 29 || payload.error === "29";
             throw new LastFmProviderError(
-                "api",
+                rateLimited ? "rate_limited" : "api",
                 "Last.fm reported an API error.",
                 errorDetails(payload, this.apiKey, "lastfm_api", response.status),
             );

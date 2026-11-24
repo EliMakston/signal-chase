@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+    backtrack,
     createGame,
     getAvailableMoves,
     makeMove,
@@ -83,6 +84,7 @@ describe("makeMove", () => {
             moves: 1,
             status: "playing",
         });
+
     });
 
     it("does not mutate the original state when a move is invalid", () => {
@@ -144,5 +146,55 @@ describe("makeMove", () => {
 
         expect(makeMove(mockGraph, game, "missing-song")).toBeNull();
         expect(game.moves).toBe(0);
+    });
+});
+
+describe("backtrack", () => {
+    it("returns to the previous visited song and decrements moves", () => {
+        const game = createGame(mockGraph, "song-1", "song-7");
+        const oneMove = makeMove(mockGraph, game, "song-2")!;
+        const previous = backtrack(oneMove);
+
+        expect(previous).toEqual({
+            ...game,
+            currentSongId: "song-1",
+            visitedSongs: ["song-1"],
+            moves: 0,
+            status: "playing",
+        });
+        expect(oneMove.currentSongId).toBe("song-2");
+    });
+
+    it("backs up one step after multiple moves without requiring a reverse edge", () => {
+        const game = createGame(mockGraph, "song-1", "song-7");
+        const moved = makeMove(
+            mockGraph,
+            makeMove(mockGraph, game, "song-2")!,
+            "song-4",
+        )!;
+
+        expect(backtrack(moved)).toMatchObject({
+            currentSongId: "song-2",
+            visitedSongs: ["song-1", "song-2"],
+            moves: 1,
+        });
+        expect(mockGraph.edges.get("song-4")).not.toContain("song-2");
+    });
+
+    it("does not backtrack at the start or after a win", () => {
+        const initial = createGame(mockGraph, "song-1", "song-7");
+        const atStart = backtrack(initial);
+        const won = makeMove(
+            mockGraph,
+            makeMove(
+                mockGraph,
+                makeMove(mockGraph, initial, "song-2")!,
+                "song-4",
+            )!,
+            "song-7",
+        )!;
+
+        expect(atStart).toBeNull();
+        expect(backtrack(won)).toBeNull();
     });
 });

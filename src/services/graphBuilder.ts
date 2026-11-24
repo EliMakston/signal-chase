@@ -12,6 +12,27 @@ export interface GraphBuildOptions {
     maxRequests?: number;
 }
 
+export interface GraphBuildDiagnostics {
+    discoveredSongIds: string[];
+    expandedSongIds: string[];
+    unexpandedSongIds: string[];
+    expandedWithZeroUsableRecommendationsSongIds: string[];
+    upstreamRequestCount: number;
+    songsOmittedAtSongLimit: number;
+    stopReasons: {
+        depthLimitSongIds: string[];
+        requestLimitSongIds: string[];
+        songLimitReached: boolean;
+        queueExhausted: boolean;
+    };
+    durationMs: number;
+}
+
+export interface GraphBuildResult {
+    graph: SongGraph;
+    diagnostics: GraphBuildDiagnostics;
+}
+
 export type GraphBuildErrorKind =
     | "seed_not_found"
     | "provider_failure"
@@ -22,8 +43,9 @@ export class GraphBuildError extends Error {
         readonly kind: GraphBuildErrorKind,
         message: string,
         readonly songId: string,
+        options?: ErrorOptions,
     ) {
-        super(message);
+        super(message, options);
         this.name = "GraphBuildError";
     }
 }
@@ -96,22 +118,42 @@ export async function buildGraph(
     seedSongId: string,
     options: GraphBuildOptions = {},
 ): Promise<SongGraph> {
+    const result = await buildGraphWithDiagnostics(provider, seedSongId, options);
+    return result.graph;
+}
+
+/**
+ * Builds a bounded directed recommendation graph and reports traversal details
+ * separately from SongGraph, so callers can retain the public graph format.
+ */
+export async function buildGraphWithDiagnostics(
+    provider: MusicProvider,
+    seedSongId: string,
+    options: GraphBuildOptions = {},
+): Promise<GraphBuildResult> {
+    const startedAt = performance.now();
     const limits = validatedOptions(options);
     const nodes = new Map<string, Song>();
     const edges = new Map<string, string[]>();
     const discovered = new Set<string>();
     const expanded = new Set<string>();
+    const depthLimitSongIds = new Set<string>();
+    const requestLimitSongIds = new Set<string>();
+    const expandedWithZeroUsableRecommendations = new Set<string>();
     const queue: QueueEntry[] = [];
 
     let requestCount = 1;
+    let songsOmittedAtSongLimit = 0;
+    let requestLimitBlockedExpansion = false;
     let seed: Song | null;
     try {
         seed = await provider.getSong(seedSongId);
-    } catch {
+    } catch (error) {
         throw new GraphBuildError(
             "provider_failure",
             `Music provider failed to fetch seed "${seedSongId}".`,
             seedSongId,
+            { cause: error },
         );
     }
 
@@ -136,11 +178,14 @@ export async function buildGraph(
 
     for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
         const { songId, depth } = queue[queueIndex];
-        if (
-            expanded.has(songId) ||
-            depth >= limits.maxDepth ||
-            requestCount >= limits.maxRequests
-        ) {
+        if (expanded.has(songId)) continue;
+        if (depth >= limits.maxDepth) {
+            depthLimitSongIds.add(songId);
+            continue;
+        }
+        if (requestCount >= limits.maxRequests) {
+            requestLimitSongIds.add(songId);
+            requestLimitBlockedExpansion = true;
             continue;
         }
 
@@ -149,11 +194,12 @@ export async function buildGraph(
         requestCount += 1;
         try {
             recommendations = await provider.getSimilarSongs(songId);
-        } catch {
+        } catch (error) {
             throw new GraphBuildError(
                 "provider_failure",
                 `Music provider failed to fetch recommendations for "${songId}".`,
                 songId,
+                { cause: error },
             );
         }
 
@@ -187,6 +233,7 @@ export async function buildGraph(
 
             if (!discovered.has(recommendationId)) {
                 if (nodes.size >= limits.maxSongs) {
+                    songsOmittedAtSongLimit += 1;
                     continue;
                 }
 
@@ -201,6 +248,9 @@ export async function buildGraph(
         }
 
         edges.set(songId, outgoing);
+        if (outgoing.length === 0) {
+            expandedWithZeroUsableRecommendations.add(songId);
+        }
     }
 
     for (const songId of nodes.keys()) {
@@ -209,5 +259,27 @@ export async function buildGraph(
         }
     }
 
-    return { nodes, edges };
+    const graph = { nodes, edges };
+    return {
+        graph,
+        diagnostics: {
+            discoveredSongIds: [...discovered],
+            expandedSongIds: [...expanded],
+            unexpandedSongIds: [...discovered].filter(
+                (songId) => !expanded.has(songId),
+            ),
+            expandedWithZeroUsableRecommendationsSongIds: [
+                ...expandedWithZeroUsableRecommendations,
+            ],
+            upstreamRequestCount: requestCount,
+            songsOmittedAtSongLimit,
+            stopReasons: {
+                depthLimitSongIds: [...depthLimitSongIds],
+                requestLimitSongIds: [...requestLimitSongIds],
+                songLimitReached: songsOmittedAtSongLimit > 0,
+                queueExhausted: !requestLimitBlockedExpansion,
+            },
+            durationMs: performance.now() - startedAt,
+        },
+    };
 }

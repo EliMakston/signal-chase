@@ -58,3 +58,21 @@ export function makeMove(
         status: nextSongId === gameState.targetSongId ? "won" : "playing",
     };
 }
+
+export function backtrack(gameState: GameState): GameState | null {
+    if (
+        gameState.status !== "playing" ||
+        gameState.visitedSongs.length <= 1
+    ) {
+        return null;
+    }
+
+    const visitedSongs = gameState.visitedSongs.slice(0, -1);
+    return {
+        ...gameState,
+        currentSongId: visitedSongs[visitedSongs.length - 1],
+        visitedSongs,
+        moves: visitedSongs.length - 1,
+        status: "playing",
+    };
+}

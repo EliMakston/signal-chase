@@ -27,6 +27,11 @@ export const THEMES = [
     label: 'Paper',
     description: 'Light example theme showing the token contract. Replace or delete.',
   },
+  {
+    id: 'radio-terminal',
+    label: 'Radio Terminal',
+    description: 'Warm, instrument-inspired colors for Spotify Races.',
+  },
 ] as const
 
 export type ThemeId = (typeof THEMES)[number]['id']

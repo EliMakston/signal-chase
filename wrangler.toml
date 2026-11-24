@@ -33,6 +33,18 @@ APP_NAME = "spotify-races"
 # Expo client, for example: "myapp://auth/callback".
 NATIVE_AUTH_REDIRECT_URIS = ""
 
+# One weighted per-IP allowance shared by the public music endpoints:
+# searches and similar lookups cost 1; a graph build costs its full maximum
+# upstream request budget (30). Cloudflare rate-limit counters are approximate
+# and per location; see docs/production-readiness.md before changing this.
+[[ratelimits]]
+name = "MUSIC_API_LIMITER"
+namespace_id = "20261123001"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["AppRecordRoom", "AppYjsRoom", "AppCanvasRoom", "AppPresenceRoom", "AppCronRoom", "AppJobRoom"]

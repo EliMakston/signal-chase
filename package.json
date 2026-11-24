@@ -1,6 +1,6 @@
 {
   "name": "spotify-races",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "engines": {
     "node": ">=22.15.0 <23 || >=24 <25 || >=26 <27",
     "npm": ">=11.6.0"

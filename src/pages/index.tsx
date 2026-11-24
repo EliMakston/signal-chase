@@ -28,7 +28,7 @@ export default function Landing() {
                 <p className="radio-technical-label">Musical Navigation System</p>
               </div>
             </div>
-            <span className="signal-beta-badge">PUBLIC BETA · V0.1.0</span>
+            <span className="signal-beta-badge">PUBLIC BETA · V0.1.1</span>
           </header>
 
           <section aria-labelledby="landing-title" className="signal-landing-hero">
@@ -48,7 +48,12 @@ export default function Landing() {
               <span aria-hidden="true">→</span>
             </Link>
             <p className="signal-live-note" role="note">
-              Live music lookup is off for this beta. Demo mode is ready to play.
+              Play Random or Custom races across six curated music networks
+              with 240 song entries and three difficulty levels. Choose your
+              own starting and destination songs in any network, with no
+              account or connection required for Demo play.
+              <br />
+              Live music lookup is unavailable pending provider approval.
             </p>
           </section>
 
@@ -83,7 +88,7 @@ export default function Landing() {
               Signal Chase is an independent portfolio project, not affiliated
               with or endorsed by any music streaming service.
             </p>
-            <span className="radio-technical-label">DEMO GRAPH · BETA 0.1.0</span>
+            <span className="radio-technical-label">DEMO GRAPH · BETA 0.1.1</span>
           </footer>
         </div>
       </main>

@@ -3,7 +3,10 @@ import {
     canStartCustomRace,
     createInitialCustomRaceState,
     customRaceReducer,
+    getCustomRaceReadiness,
 } from "./customRaceState";
+import type { SongGraph } from "../../game/types";
+import { searchLocalSongs } from "./songSearch";
 
 const startSong = {
     id: "lastfm:Artist:Start",
@@ -92,6 +95,79 @@ describe("custom race selection state", () => {
             startSong: null,
             targetSong: null,
             playing: false,
+        });
+    });
+
+    it("checks Demo endpoint membership and directed reachability", () => {
+        const state = {
+            mode: "custom" as const,
+            startSong,
+            targetSong,
+            playing: false,
+        };
+        const graph: SongGraph = {
+            nodes: new Map([
+                [startSong.id, startSong],
+                [targetSong.id, targetSong],
+            ]),
+            edges: new Map([
+                [startSong.id, [targetSong.id]],
+                [targetSong.id, []],
+            ]),
+        };
+        expect(getCustomRaceReadiness(state, graph).ready).toBe(true);
+        expect(
+            getCustomRaceReadiness(state, {
+                ...graph,
+                edges: new Map([
+                    [startSong.id, []],
+                    [targetSong.id, []],
+                ]),
+            }).message,
+        ).toContain("No directed route");
+        expect(getCustomRaceReadiness(state, null).ready).toBe(false);
+    });
+
+    it("clears endpoint selections for a new custom race", () => {
+        const selected = {
+            mode: "custom" as const,
+            startSong,
+            targetSong,
+            playing: true,
+        };
+        expect(
+            customRaceReducer(selected, { type: "new-custom-race" }),
+        ).toEqual({
+            mode: "custom",
+            startSong: null,
+            targetSong: null,
+            playing: false,
+        });
+    });
+
+    describe("offline song search", () => {
+        const catalogue = [
+            { id: "1", title: "Track Alpha", artist: "The Exact Artist", albumArt: "" },
+            { id: "2", title: "Exact Artist", artist: "Another Band", albumArt: "" },
+            { id: "3", title: "A Longer Exact Artist Song", artist: "Other", albumArt: "" },
+            { id: "4", title: "Unrelated", artist: "Exact Artist Project", albumArt: "" },
+        ];
+
+        it("matches titles and artists case-insensitively with normalized partial queries", () => {
+            expect(searchLocalSongs(catalogue, "  TRACK   ALP ")).toEqual([
+                catalogue[0],
+            ]);
+            expect(searchLocalSongs(catalogue, "artist")).toHaveLength(4);
+        });
+
+        it("ranks exact title and artist matches above partial matches deterministically", () => {
+            expect(searchLocalSongs(catalogue, "exact artist").map(({ id }) => id))
+                .toEqual(["2", "1", "3", "4"]);
+        });
+
+        it("returns the catalogue for an empty query and no results for a miss", () => {
+            expect(searchLocalSongs(catalogue, " \t ")).toEqual(catalogue);
+            expect(searchLocalSongs(catalogue, "not in this catalogue")).toEqual([]);
         });
     });
 });

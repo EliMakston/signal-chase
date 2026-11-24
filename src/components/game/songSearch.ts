@@ -14,6 +14,39 @@ export interface SongSearchState {
     error: string | null;
 }
 
+function normalizeQuery(value: string): string {
+    return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+export function searchLocalSongs(
+    songs: readonly Song[],
+    query: string,
+): Song[] {
+    const normalizedQuery = normalizeQuery(query);
+    if (!normalizedQuery) return [...songs];
+
+    return songs
+        .map((song, index) => {
+            const title = normalizeQuery(song.title);
+            const artist = normalizeQuery(song.artist);
+            return {
+                song,
+                index,
+                exact: title === normalizedQuery || artist === normalizedQuery,
+                matches:
+                    title.includes(normalizedQuery) ||
+                    artist.includes(normalizedQuery),
+            };
+        })
+        .filter(({ matches }) => matches)
+        .sort(
+            (left, right) =>
+                Number(right.exact) - Number(left.exact) ||
+                left.index - right.index,
+        )
+        .map(({ song }) => song);
+}
+
 export const EMPTY_SONG_SEARCH: SongSearchState = {
     status: "idle",
     songs: [],

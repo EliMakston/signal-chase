@@ -8,8 +8,14 @@ import type {
     CustomRaceState,
     CustomSongRole,
 } from "./customRaceState";
-import { canStartCustomRace } from "./customRaceState";
-import { createSongSearchController } from "./songSearch";
+import {
+    canStartCustomRace,
+    getCustomRaceReadiness,
+} from "./customRaceState";
+import {
+    createSongSearchController,
+    searchLocalSongs,
+} from "./songSearch";
 import type { SongSearchState } from "./songSearch";
 
 function SongSearchField({
@@ -17,11 +23,13 @@ function SongSearchField({
     selectedSong,
     unavailableSongId,
     dispatch,
+    localSongs,
 }: {
     role: CustomSongRole;
     selectedSong: Song | null;
     unavailableSongId: string | null;
     dispatch: (action: CustomRaceAction) => void;
+    localSongs?: readonly Song[];
 }) {
     const [query, setQuery] = useState("");
     const [searchState, setSearchState] = useState<SongSearchState>({
@@ -37,10 +45,25 @@ function SongSearchField({
     const resultsHeadingId = `${inputId}-results-heading`;
 
     useEffect(
-        () => controller.search(query, setSearchState),
-        [controller, query, retryCount],
+        () =>
+            localSongs === undefined
+                ? controller.search(query, setSearchState)
+                : undefined,
+        [controller, localSongs, query, retryCount],
     );
 
+    const displayedSearchState: SongSearchState =
+        localSongs === undefined
+            ? searchState
+            : (() => {
+                  const songs = searchLocalSongs(localSongs, query);
+                  return {
+                      status: songs.length ? "results" : "empty",
+                      songs,
+                      error: null,
+                  };
+              })();
+    const isLocal = localSongs !== undefined;
     const label = role === "start" ? "Starting song" : "Destination song";
     return (
         <section
@@ -60,7 +83,10 @@ function SongSearchField({
                     placeholder={`Search for a ${role === "start" ? "starting" : "destination"} song`}
                     aria-label={`${label} search`}
                     aria-describedby={
-                        searchState.status === "idle" ? undefined : feedbackId
+                        displayedSearchState.status === "idle" ||
+                        displayedSearchState.status === "results"
+                            ? undefined
+                            : feedbackId
                     }
                     className="radio-inset-display radio-search-input h-11 w-full px-3 text-foreground outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
                 />
@@ -88,7 +114,7 @@ function SongSearchField({
             )}
 
             <div className="mt-3">
-                {searchState.status === "loading" && (
+                {displayedSearchState.status === "loading" && (
                     <p
                         id={feedbackId}
                         role="status"
@@ -98,19 +124,21 @@ function SongSearchField({
                         Searching Last.fm…
                     </p>
                 )}
-                {searchState.status === "empty" && (
+                {displayedSearchState.status === "empty" && (
                     <p
                         id={feedbackId}
                         role="status"
                         aria-live="polite"
                         className="radio-search-feedback min-h-11 px-3 py-3 text-sm text-muted-foreground"
                     >
-                        No songs found. Try another search.
+                        {isLocal
+                            ? "No songs match this search in the selected network."
+                            : "No songs found. Try another search."}
                     </p>
                 )}
-                {searchState.status === "error" && (
+                {displayedSearchState.status === "error" && (
                     <div id={feedbackId} role="alert" className="radio-search-error space-y-2 p-3">
-                        <p className="text-sm text-foreground">{searchState.error}</p>
+                        <p className="text-sm text-foreground">{displayedSearchState.error}</p>
                         <Button
                             variant="outline"
                             className="radio-mechanical-button"
@@ -123,7 +151,7 @@ function SongSearchField({
                         </Button>
                     </div>
                 )}
-                {searchState.songs.length > 0 && (
+                {displayedSearchState.songs.length > 0 && (
                     <>
                         <h3
                             id={resultsHeadingId}
@@ -135,7 +163,7 @@ function SongSearchField({
                             aria-labelledby={resultsHeadingId}
                             className="radio-search-results grid max-h-72 gap-2 overflow-y-auto"
                         >
-                            {searchState.songs.map((song, index) => {
+                            {displayedSearchState.songs.map((song, index) => {
                                 const selected = selectedSong?.id === song.id;
                                 const duplicate = unavailableSongId === song.id;
                                 const actionLabel = selected
@@ -144,10 +172,13 @@ function SongSearchField({
                                       ? "Already selected"
                                       : "Select";
                                 return (
-                                    <li key={song.id}>
+                                    <li
+                                        key={song.id}
+                                        className="radio-search-result-item flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center"
+                                    >
                                         <Button
                                             variant={selected ? "secondary" : "outline"}
-                                            className="radio-search-result radio-mechanical-button h-auto w-full justify-between gap-2 whitespace-normal px-2.5 py-2 text-left sm:px-3"
+                                            className="radio-search-result radio-mechanical-button h-auto min-w-0 flex-1 justify-between gap-2 whitespace-normal px-2.5 py-2 text-left sm:px-3"
                                             disabled={duplicate}
                                             aria-pressed={selected}
                                             onClick={() =>
@@ -190,12 +221,18 @@ export function CustomRacePanel({
     state,
     dispatch,
     onStart,
+    localSongs,
+    localDemo,
+    readiness,
 }: {
     state: CustomRaceState;
     dispatch: (action: CustomRaceAction) => void;
     onStart: () => void;
+    localSongs?: readonly Song[];
+    localDemo: boolean;
+    readiness?: { ready: boolean; message: string };
 }) {
-    const ready = canStartCustomRace(state);
+    const ready = canStartCustomRace(state) && (readiness?.ready ?? true);
 
     return (
         <section className="radio-setup-console radio-terminal-panel mx-auto w-full min-w-0 p-3 sm:p-5 lg:p-6">
@@ -204,7 +241,9 @@ export function CustomRacePanel({
                     <p className="radio-technical-label mb-2">Custom route configuration</p>
                     <h2 className="radio-heading text-xl sm:text-2xl">Choose your race songs</h2>
                     <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                        Search Last.fm, then select different songs for the origin and destination.
+                        {localDemo
+                            ? "Browse or search songs in the selected curated network, then choose different endpoints."
+                            : "Search Last.fm, then select different songs for the origin and destination."}
                     </p>
                 </div>
                 <p
@@ -222,17 +261,30 @@ export function CustomRacePanel({
                     selectedSong={state.startSong}
                     unavailableSongId={state.targetSong?.id ?? null}
                     dispatch={dispatch}
+                    localSongs={localSongs}
                 />
                 <SongSearchField
                     role="target"
                     selectedSong={state.targetSong}
                     unavailableSongId={state.startSong?.id ?? null}
                     dispatch={dispatch}
+                    localSongs={localSongs}
                 />
             </div>
+            {readiness && state.startSong && state.targetSong && !readiness.ready && (
+                <p
+                    className="mt-3 text-sm text-destructive"
+                    role="status"
+                    aria-live="polite"
+                >
+                    {readiness.message}
+                </p>
+            )}
             <footer className="radio-setup-footer mt-4 flex flex-col gap-3 border-t border-border pt-4 sm:mt-5 sm:flex-row sm:items-center sm:justify-between">
                 <p className="mt-1 text-sm text-muted-foreground">
-                    Recommendations are explored after the race starts.
+                    {localDemo
+                        ? "Curated connections are available offline; no music service is contacted."
+                        : "Recommendations are explored after the race starts."}
                 </p>
                 <Button
                     className="radio-mechanical-button radio-primary-action w-full justify-center sm:w-auto"

@@ -98,6 +98,42 @@ limit. Do not claim that they guarantee aggregate storage compliance. Confirm
 that caching permitted by the response headers is also consistent with the
 applicable Last.fm terms before enabling live music.
 
+## Rate-limit and concurrency review
+
+The Cloudflare binding is an incoming application abuse control, not a Last.fm
+quota. `/api/music/search` charges one unit and makes at most one upstream
+request; `/api/music/similar` charges one and makes at most one; a graph request
+charges 30 and has a 30-upstream-call budget (one seed `track.getInfo` plus at
+most 29 `track.getSimilar` calls). Graph depth is at most 3, 50 songs, and 6
+recommendations per song. These are maximum provider calls per accepted
+operation; eligible response-cache hits may reduce upstream traffic.
+
+The configured 30 weighted units per client IP per 60 seconds is enforced by
+Cloudflare's native limiter, which is approximate and per Cloudflare location.
+It is not a global upstream rate limit or a strict quota. Graph concurrency is
+capped at four active builds per Worker isolate, so the effective aggregate
+limit grows with the number of isolates. Search and similar-track calls have
+no global concurrency limit. There is no global maximum for Last.fm
+requests-per-second or aggregate request volume. The Worker returns `429` for
+Last.fm error 29 or HTTP 429 with a bounded `Retry-After` value, defaulting to
+60 seconds; it does not automatically retry.
+
+Do not present the application rate limit as a permitted Last.fm rate. Last.fm
+reserves discretion to limit traffic and warns against several requests per
+second, but the reviewed API documentation does not publish a numeric allowance.
+Obtain written guidance for this app's expected public traffic before
+activation. If a global cap is required, use a shared limiter with a bounded
+queue, explicit concurrency, and fail-closed behavior; configure its rate only
+after Last.fm confirms an acceptable budget.
+
+The response cache's per-isolate byte and entry limits do not establish
+compliance with the terms' aggregate 100 MB storage limit. There is no
+centralized byte accounting across isolates, responses delivered to clients,
+or concurrent users. Clarify Last.fm's interpretation and obtain confirmation
+that response-header-authorized caching is permitted under the applicable
+terms; implement centralized accounting if required before enabling live
+music.
+
 ## Last.fm terms, catalogue links, and attribution
 
 The provider uses documented `track.search`, `track.getInfo`, and
